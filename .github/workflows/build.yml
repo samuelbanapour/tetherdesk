@@ -123,6 +123,10 @@ jobs:
           mkdir -p "$out/web"
           cp build/TetherDesk build/tetherdesk-host build/tetherdesk-probe README.md "$out/"
           cp build-web/index.html build-web/index.js build-web/index.wasm "$out/web/"
+          # Relay bundle (deployed to the server by relay/deploy-ec2.sh)
+          mkdir -p "$out/relay/public"
+          cp build/tetherdesk-relay "$out/relay/"
+          cp build-web/index.html build-web/index.js build-web/index.wasm relay/get.html "$out/relay/public/"
           zip -qr "$out.zip" "$out"
           echo "ASSET=$out.zip" >> "$GITHUB_ENV"
 
@@ -144,4 +148,4 @@ jobs:
 
             Use **Connect to a PC** (an ID works from anywhere, via the relay) to control another computer, or
             **Share this PC** to let someone connect to yours. Helpers can also connect from any browser at
-            https://tetherdesk-relay.onrender.com/
+            https://tetherdesk.54-151-75-113.nip.io/

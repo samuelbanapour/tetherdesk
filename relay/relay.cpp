@@ -403,11 +403,13 @@ void on_signal(int) { g_stop = true; }
 
 int main(int argc, char **argv) {
     int port = 8080;
+    std::string bind = "::";
     if (const char *p = std::getenv("PORT")) port = std::atoi(p);
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--port" && i + 1 < argc) port = std::atoi(argv[++i]);
         else if (a == "--web-root" && i + 1 < argc) g_web_root = argv[++i];
+        else if (a == "--bind" && i + 1 < argc) bind = argv[++i];  // e.g. 127.0.0.1 behind a reverse proxy
     }
     rd_net_init();
 #ifndef _WIN32
@@ -417,8 +419,8 @@ int main(int argc, char **argv) {
     std::signal(SIGTERM, on_signal);
 
     char err[256];
-    rd_socket listener = rd_net_listen("::", port, err, sizeof err);
-    if (listener == RD_INVALID_SOCKET) listener = rd_net_listen("0.0.0.0", port, err, sizeof err);
+    rd_socket listener = rd_net_listen(bind.c_str(), port, err, sizeof err);
+    if (listener == RD_INVALID_SOCKET && bind == "::") listener = rd_net_listen("0.0.0.0", port, err, sizeof err);
     if (listener == RD_INVALID_SOCKET) {
         std::fprintf(stderr, "error: %s\n", err);
         return 1;

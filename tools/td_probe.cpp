@@ -104,7 +104,7 @@ int main(int argc, char **argv) {
     auto t = td::Transport::create();
     if (!relay_id.empty()) {  // through an internet relay, by ID
         size_t c = relay.rfind(':');
-        std::string rh = relay.empty() ? "tetherdesk-relay.onrender.com" : relay.substr(0, c);
+        std::string rh = relay.empty() ? "tetherdesk.54-151-75-113.nip.io" : relay.substr(0, c);
         int rp = (relay.empty() || c == std::string::npos) ? 443 : std::atoi(relay.substr(c + 1).c_str());
         t->connect(rh, rp, "/v/" + relay_id, rp == 443);
     } else {

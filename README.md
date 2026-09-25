@@ -22,7 +22,7 @@ tetherdesk/
               store.cpp            saved PCs, pinned host identities, thumbnails
               transport_native.cpp  TCP + our own WebSocket client
               transport_web.cpp     browser WebSocket via Emscripten
-  relay/    internet relay server (C++), Dockerfile, QuickSupport download page (render.yaml)
+  relay/    internet relay server (C++), deploy-ec2.sh, Dockerfile, QuickSupport download page
   tools/    tetherdesk-probe (headless test client), gen_font.py / gen_icon.py (build-time only)
   tests/    codec / crypto / WebSocket self-tests
 ```
@@ -71,19 +71,19 @@ Prebuilt Windows, Linux and macOS zips are attached to each
 
 ### Helping someone: nothing to install, no VPN
 
-1. Send them **https://tetherdesk-relay.onrender.com/get**. They download **TetherDesk QuickSupport**:
+1. Send them **https://tetherdesk.54-151-75-113.nip.io/get**. They download **TetherDesk QuickSupport**:
    - on Windows, a single `.exe`;
    - on a Mac, a zip containing the app.
 2. They run it. There's no installer, and closing it ends the session. It shows an **ID** (like `728 857 467`) and a **password**.
 3. You connect in one of two ways:
-   - open **https://tetherdesk-relay.onrender.com/** in any browser and enter the ID and password, or
+   - open **https://tetherdesk.54-151-75-113.nip.io/** in any browser and enter the ID and password, or
    - type the ID into TetherDesk's **Quick connect**.
 
 This works across the internet with no port forwarding or VPN. Both computers make *outgoing* connections to the relay (`relay/`), which pairs them by ID.
 
 The session stays end-to-end encrypted between the two computers, so the relay only ever forwards ciphertext. It can't see the screen or keystrokes, and it can't learn the password.
 
-The relay runs on Render from `relay/Dockerfile` (see `render.yaml`). It redeploys automatically when `main` changes, and it builds the web viewer from source. It's on Render's free plan, so after a quiet spell the first connection can take about a minute while it wakes up.
+The relay runs on a small Ubuntu server behind Caddy, which provides HTTPS. `relay/deploy-ec2.sh` installs or updates it from the latest release as a sandboxed systemd service. `relay/Dockerfile` can host it anywhere Docker runs; it builds the web viewer and the relay from source.
 
 To use a different relay, pass `--relay your.host` to the host and the viewer. Port 443 uses TLS, verified against the operating system's trusted root certificates.
 

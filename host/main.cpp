@@ -30,7 +30,7 @@
 #include "server.h"
 
 #ifndef TD_DEFAULT_RELAY
-#define TD_DEFAULT_RELAY "tetherdesk-relay.onrender.com"
+#define TD_DEFAULT_RELAY "tetherdesk.54-151-75-113.nip.io"
 #endif
 
 namespace {

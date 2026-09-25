@@ -37,7 +37,7 @@ struct Options {
     bool start_sharing = false;     // open "Share this PC" and turn sharing on
     bool share_demo = false;        // ...sharing the demo desktop (not saved)
     bool quick_support = false;     // minimal "get help" mode: just the Share screen
-    std::string relay = "tetherdesk-relay.onrender.com";  // for connecting by ID (native)
+    std::string relay = "tetherdesk.54-151-75-113.nip.io";  // for connecting by ID (native)
     // Web builds: where the page came from.
     bool web_secure = false, web_relay = false;
     std::string web_host, connect_id;
