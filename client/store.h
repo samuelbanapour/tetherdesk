@@ -39,6 +39,12 @@ public:
     void trust(const std::string &host, int port, const std::string &fingerprint);
 
     std::string thumbnail_path(const std::string &id) const;
+    std::string dir() const { return dir_; }
+
+    // "Share this PC" settings.
+    std::string share_password;
+    bool share_view_only = false;
+    bool share_demo = false;
 
 private:
     std::string dir_;

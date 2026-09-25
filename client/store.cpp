@@ -83,6 +83,10 @@ void Store::load() {
             pc.last_used = std::atoll(v[8].c_str());
             pc.password = pc.remember ? v[9] : "";
             if (!pc.id.empty() && !pc.host.empty()) pcs.push_back(pc);
+        } else if (v.size() >= 4 && v[0] == "share") {
+            share_password = v[1];
+            share_view_only = v[2] == "1";
+            share_demo = v[3] == "1";
         } else if (v.size() >= 3 && v[0] == "known") {
             known_[v[1]] = v[2];
         }
@@ -100,6 +104,8 @@ void Store::save() const {
               << esc(pc.user_name) << '\t' << (pc.remember ? 1 : 0) << '\t' << (pc.fullscreen ? 1 : 0) << '\t'
               << pc.last_used << '\t' << esc(pc.remember ? pc.password : "") << '\n';
         for (const auto &k : known_) f << "known\t" << esc(k.first) << '\t' << esc(k.second) << '\n';
+        f << "share\t" << esc(share_password) << '\t' << (share_view_only ? 1 : 0) << '\t' << (share_demo ? 1 : 0)
+          << '\n';
     }
 #ifndef _WIN32
     chmod(tmp.c_str(), 0600);  // may contain remembered passwords

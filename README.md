@@ -26,22 +26,43 @@ tetherdesk/
   tests/    codec / crypto / WebSocket self-tests
 ```
 
-## Build
+## Install
 
-You need CMake and a C/C++ compiler. The native viewer also needs SDL2 (`brew install sdl2`). The web viewer needs Emscripten (`brew install emscripten`).
+Download from the [Releases page](../../releases):
+
+- **macOS 12.3+:** `TetherDesk-<version>-macOS.dmg`. Open it and drag TetherDesk to Applications. The app isn't notarized, so the first time you open it, right-click it and choose **Open**.
+- **Windows 10/11:** `TetherDesk-Setup-<version>.exe`. SmartScreen may warn about an unknown publisher; choose **More info → Run anyway**.
+- **Linux (X11):** a zip containing the binaries.
+
+The app has two tabs:
+
+- **Connect to a PC:** control another computer.
+- **Share this PC:** turn on the switch to let someone connect to yours. It shows your address, a password and this PC's identity. On macOS, the first time you share, allow TetherDesk under Screen Recording and Accessibility; the tab has buttons that open those settings.
+
+## Build from source
+
+You need CMake and a C/C++ compiler. For the native viewer you also need either:
+
+- SDL2 installed (`brew install sdl2` or `apt install libsdl2-dev`), or
+- the `-DTD_STATIC_SDL=ON` option, which downloads SDL and builds it into the app.
+
+For the web viewer you need Emscripten (`brew install emscripten`).
 
 ```bash
-./build.sh          # host + native viewer + web viewer -> build/
-./build.sh test     # native build + unit tests
+./build.sh                         # host + native viewer + web viewer -> build/
+./build.sh test                    # native build + unit tests
+./packaging/macos/make_dmg.sh      # self-contained dist/TetherDesk-<version>-macOS.dmg
 ```
+
+To build a Windows installer, see the `Package (Windows installer)` step in `.github/workflows/build.yml`. It uses Inno Setup with `packaging/windows/tetherdesk.iss`.
 
 ## Run
 
 ```bash
 build/tetherdesk-host                    # share this screen (prints a generated password + URLs)
 build/tetherdesk-host --demo             # share a synthetic demo desktop instead
-build/tetherdesk                         # native viewer: saved PCs + quick connect
-build/tetherdesk 192.168.1.20 --password abcde-fghjk     # connect straight away
+open build/TetherDesk.app                 # native viewer (build/TetherDesk on Linux/Windows)
+build/TetherDesk.app/Contents/MacOS/TetherDesk 192.168.1.20 --password abcde-fghjk  # connect straight away
 ```
 
 Prebuilt Windows, Linux and macOS zips are attached to each

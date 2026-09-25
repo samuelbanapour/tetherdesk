@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 
 #include "rd_codec.h"
 #include "rd_crypto.h"
@@ -62,6 +63,10 @@ App::App(SDL_Window *window, SDL_Renderer *renderer, Options opts)
     focus_ = (is_web() && f_password_.empty()) ? 3 : 0;
     SDL_StartTextInput();
 
+    if (opts_.start_sharing && !is_web()) {
+        tab_ = HomeTab::Share;
+        start_sharing();
+    }
     if (opts_.autoconnect) {
         SavedPc pc;
         pc.label = opts_.host;
@@ -119,6 +124,11 @@ bool App::tick() {
     } else if (reconnect_at_ && now >= reconnect_at_) {
         reconnect_at_ = 0;
         start_connect();
+    }
+
+    if (!is_web() && now - share_log_read_ >= 500) {
+        share_log_read_ = now;
+        poll_share_log();
     }
 
     if (phase_ == Phase::Live) {
@@ -970,6 +980,18 @@ void App::draw_home() {
     draw_logo(ui_, pad, 16, 1);
     ui_.text(pad + 46, 16, "TetherDesk", theme::text, 1.45f);
     ui_.text(pad + 46, 42, "Remote Desktop", theme::dim);
+    // Tabs, Remote Desktop style: connect out, or let others connect in.
+    {
+        const float tw = 150, tx = std::max(pad + 230, W / 2 - tw);
+        if (ui_.button({tx, 20, tw - 4, 34}, "Connect to a PC", tab_ == HomeTab::Connect) && !modal)
+            tab_ = HomeTab::Connect;
+        std::string share_label = sharing_ ? "Share this PC  (on)" : "Share this PC";
+        if (ui_.button({tx + tw, 20, tw + 20, 34}, share_label, tab_ == HomeTab::Share) && !modal) tab_ = HomeTab::Share;
+    }
+    if (tab_ == HomeTab::Share) {
+        draw_share(96);
+        return;
+    }
     Rect add{W - pad - 120, 20, 120, 34};
     if (ui_.button(add, "+  Add PC", true) && !modal) {
         edit_ = SavedPc();
@@ -1097,6 +1119,205 @@ void App::draw_home() {
         }
         if (!modal && !ui_.consumed_click() && ui_.clicked(card) && ui_.mouse_y() > 74 && pending_delete_.empty())
             begin_connect(pc);
+    }
+}
+
+// ------------------------------------------------------------ share this PC
+
+static std::string random_share_password() {
+    static const char alphabet[] = "abcdefghjkmnpqrstuvwxyz23456789";
+    uint8_t raw[10];
+    rd_random(raw, sizeof raw);
+    std::string pw;
+    for (int i = 0; i < 10; i++) {
+        if (i == 5) pw += '-';
+        pw += alphabet[raw[i] % (sizeof alphabet - 1)];
+    }
+    return pw;
+}
+
+void App::start_sharing() {
+#ifndef __EMSCRIPTEN__
+    if (store_.share_password.empty()) {
+        store_.share_password = random_share_password();
+        store_.save();
+    }
+    std::string exe = executable_dir() + "/tetherdesk-host";
+#ifdef _WIN32
+    exe += ".exe";
+#endif
+    share_log_path_ = (store_.dir().empty() ? std::string(".") + "/" : store_.dir()) + "host.log";
+    std::vector<std::string> args = {"--password", store_.share_password, "--no-console"};
+    if (store_.share_view_only) args.push_back("--view-only");
+    if (store_.share_demo || opts_.share_demo) args.push_back("--demo");
+    share_error_.clear();
+    share_identity_.clear();
+    share_urls_.clear();
+    share_activity_.clear();
+    share_needs_screen_perm_ = share_needs_input_perm_ = false;
+    std::string err;
+    sharing_ = host_.start(exe, args, share_log_path_, err);
+    if (!sharing_) share_error_ = err;
+#endif
+}
+
+void App::stop_sharing() {
+#ifndef __EMSCRIPTEN__
+    host_.stop();
+#endif
+    sharing_ = false;
+    share_urls_.clear();
+}
+
+// The host reports everything on stdout; read its log to show status.
+void App::poll_share_log() {
+#ifndef __EMSCRIPTEN__
+    if (share_log_path_.empty()) return;
+    bool alive = host_.running();
+    std::ifstream f(share_log_path_);
+    std::string line;
+    std::vector<std::string> urls, activity;
+    std::string error;
+    bool screen_perm = false, input_perm = false;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t p;
+        if ((p = line.find("Identity")) != std::string::npos && p < 6) {
+            std::string v = line.substr(p + 8);
+            v.erase(0, v.find_first_not_of(' '));
+            share_identity_ = v.substr(0, v.find(' '));
+        } else if ((p = line.find("http://")) != std::string::npos && line.find("localhost") == std::string::npos) {
+            std::string u = line.substr(p);
+            urls.push_back(u.substr(0, u.find_first_of(" \t")));
+        } else if (line.size() > 11 && line[0] == '[' && line[9] == ']') {
+            activity.push_back(line);
+        } else if (line.rfind("error:", 0) == 0) {
+            error = line.substr(7);
+        }
+        if (line.find("Screen Recording") != std::string::npos) screen_perm = true;
+        if (line.find("Accessibility") != std::string::npos) input_perm = true;
+    }
+    share_urls_ = urls;
+    if (activity.size() > 8) activity.erase(activity.begin(), activity.end() - 8);
+    share_activity_ = activity;
+    share_needs_screen_perm_ = screen_perm;
+    share_needs_input_perm_ = input_perm;
+    if (sharing_ && !alive) {
+        sharing_ = false;
+        share_error_ = error.empty() ? "The host stopped unexpectedly" : error;
+    }
+#endif
+}
+
+void App::draw_share(float top) {
+    const float W = out_w_ / scale_;
+    const float pad = std::max(24.f, std::min(56.f, W * 0.05f));
+    const float cw = std::min(720.f, W - 2 * pad);
+    const float x = pad;
+    float y = top + 8;
+
+    ui_.text(x, y, "Share this PC", theme::text, 1.3f);
+    y += 34;
+    ui_.text(x, y, "Let someone connect to this computer with TetherDesk - from the app or a web browser.", theme::dim);
+    y += 36;
+
+    // Big on/off switch.
+    Rect sw{x, y, 64, 32};
+    ui_.fill(sw, sharing_ ? theme::good : theme::button, 16);
+    ui_.fill({sharing_ ? sw.x + 36 : sw.x + 4, sw.y + 4, 24, 24}, theme::text, 12);
+    const bool starting = sharing_ && share_identity_.empty();
+    std::string status = !sharing_ ? "Off - nobody can connect"
+                         : starting ? "Starting..."
+                                    : "On - waiting for connections";
+    ui_.text(x + 80, y + 6, status, sharing_ ? theme::good : theme::dim, 1.1f);
+    if (ui_.clicked({sw.x, sw.y, 80 + ui_.text_width(status, 1.1f), sw.h})) {
+        if (sharing_) stop_sharing();
+        else start_sharing();
+    }
+    y += 50;
+    if (!share_error_.empty()) {
+        ui_.text(x, y, ellipsize(ui_, share_error_, cw), theme::bad);
+        y += 26;
+    }
+
+    // Permission guidance (macOS asks the first time).
+    if (share_needs_screen_perm_ || share_needs_input_perm_) {
+        Rect box{x, y, cw, share_needs_screen_perm_ && share_needs_input_perm_ ? 124.f : 84.f};
+        ui_.fill(box, {60, 45, 15, 200}, 10);
+        float yy = y + 12;
+        if (share_needs_screen_perm_) {
+            ui_.text(x + 14, yy, "Allow Screen Recording for TetherDesk, then turn sharing off and on.", theme::warn);
+            if (ui_.button({x + cw - 190, yy - 4, 176, 28}, "Open Screen Recording"))
+                SDL_OpenURL("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture");
+            yy += 40;
+        }
+        if (share_needs_input_perm_) {
+            ui_.text(x + 14, yy, "Allow Accessibility so viewers can use the mouse and keyboard.", theme::warn);
+            if (ui_.button({x + cw - 190, yy - 4, 176, 28}, "Open Accessibility"))
+                SDL_OpenURL("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+        }
+        y += box.h + 14;
+    }
+
+    // Connection details.
+    Rect card{x, y, cw, 152};
+    ui_.fill(card, theme::panel, 12);
+    ui_.outline(card, theme::panel_border, 12);
+    float cy = y + 16;
+    const float lx = x + 18, vx = x + 150;
+    auto row = [&](const char *label, const std::string &value, Color c) {
+        ui_.text(lx, cy, label, theme::dim);
+        ui_.text(vx, cy, ellipsize(ui_, value, cw - 170 - 130), c, 1.1f);
+        cy += 34;
+    };
+    std::string addr = "-";
+    if (!share_urls_.empty()) {
+        addr = share_urls_[0].substr(7);  // "ip:port/"
+        if (!addr.empty() && addr.back() == '/') addr.pop_back();
+        size_t colon = addr.rfind(':');
+        if (colon != std::string::npos && addr.substr(colon + 1) == "5980") addr = addr.substr(0, colon);
+    } else if (!sharing_) {
+        addr = "(turn sharing on)";
+    }
+    row("PC address", addr, theme::text);
+    row("Password", share_show_pw_ ? (store_.share_password.empty() ? "(created when you turn sharing on)"
+                                                                     : store_.share_password)
+                                   : std::string(store_.share_password.empty() ? 0 : 11, '*'),
+        theme::text);
+    if (ui_.button({x + cw - 250, cy - 38, 110, 28}, share_show_pw_ ? "Hide" : "Show")) share_show_pw_ = !share_show_pw_;
+    if (ui_.button({x + cw - 130, cy - 38, 112, 28}, "New password")) {
+        store_.share_password = random_share_password();
+        store_.save();
+        share_show_pw_ = true;
+        if (sharing_) {  // restart so the new password takes effect
+            stop_sharing();
+            start_sharing();
+        }
+    }
+    row("Identity", share_identity_.empty() ? "-" : share_identity_, theme::good);
+    row("Web browser", share_urls_.empty() ? "-" : share_urls_[0], theme::accent_hover);
+    y += card.h + 18;
+
+    // Options (take effect the next time sharing starts).
+    bool vo = store_.share_view_only, demo = store_.share_demo;
+    if (ui_.checkbox(x, y, "View only - others can watch but not control", vo) ||
+        ui_.checkbox(x, y + 28, "Share a demo desktop instead of this screen (for testing)", demo)) {
+        store_.share_view_only = vo;
+        store_.share_demo = demo;
+        store_.save();
+        if (sharing_) {
+            stop_sharing();
+            start_sharing();
+        }
+    }
+    y += 70;
+
+    ui_.text(x, y, "Activity", theme::dim);
+    y += 24;
+    if (share_activity_.empty()) ui_.text(x, y, sharing_ ? "No connections yet" : "-", theme::dim);
+    for (auto &a : share_activity_) {
+        ui_.text(x, y, ellipsize(ui_, a, cw), theme::text);
+        y += 20;
     }
 }
 

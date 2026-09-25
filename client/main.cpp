@@ -53,7 +53,7 @@ void parse_hash(const std::string &hash, td::Options &o) {
 #ifndef __EMSCRIPTEN__
 void usage() {
     std::printf("usage: tetherdesk [host[:port]] [--password PW] [--name NAME] [--fullscreen] [--stats]\n"
-                "                  [--menu] [--screenshot FILE.bmp [--after SECONDS]]\n");
+                "                  [--share | --share-demo] [--menu] [--screenshot FILE.bmp [--after SECONDS]]\n");
 }
 #else
 void web_tick(void *arg) {
@@ -84,6 +84,8 @@ int main(int argc, char **argv) {
         else if (a == "--stats") opts.show_stats = true;
         else if (a == "--menu") opts.open_menu = true;
         else if (a == "--trust") opts.trust_new_hosts = true;
+        else if (a == "--share") opts.start_sharing = true;
+        else if (a == "--share-demo") opts.start_sharing = opts.share_demo = true;
         else if (a == "--screenshot") opts.screenshot_path = next();
         else if (a == "--after") opts.screenshot_after = std::atof(next().c_str());
         else if (a == "-h" || a == "--help") {
@@ -119,6 +121,9 @@ int main(int argc, char **argv) {
     if (opts.port <= 0) opts.port = RD_DEFAULT_PORT;
 
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+#ifdef SDL_HINT_WINDOWS_DPI_AWARENESS
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+#endif
     SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
 #ifdef __EMSCRIPTEN__
     SDL_SetHint(SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT, "#canvas");

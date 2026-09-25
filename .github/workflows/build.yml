@@ -14,7 +14,6 @@ permissions:
   contents: write
 
 env:
-  SDL_VERSION: 2.30.9
   EMSDK_VERSION: 3.1.74
 
 jobs:
@@ -37,23 +36,12 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libx11-dev libxtst-dev
 
-      - name: Install dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: brew install sdl2
-
-      - name: Download SDL2 (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Invoke-WebRequest "https://github.com/libsdl-org/SDL/releases/download/release-$env:SDL_VERSION/SDL2-devel-$env:SDL_VERSION-VC.zip" -OutFile sdl.zip
-          Expand-Archive sdl.zip -DestinationPath "$env:RUNNER_TEMP"
-          "SDL2_DIR=$env:RUNNER_TEMP\SDL2-$env:SDL_VERSION\cmake" | Out-File -FilePath $env:GITHUB_ENV -Append
-
       - name: Configure
         shell: bash
         run: |
           extra=""
-          if [ "$RUNNER_OS" = "macOS" ]; then extra="-DTD_STATIC_SDL=ON"; fi
+          # Windows/macOS release binaries embed SDL (built from source).
+          if [ "$RUNNER_OS" != "Linux" ]; then extra="-DTD_STATIC_SDL=ON"; fi
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release $extra
 
       - name: Build
@@ -85,22 +73,36 @@ jobs:
           emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release
           cmake --build build-web --parallel
 
-      - name: Package
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Package (macOS .dmg)
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'macOS'
         shell: bash
         run: |
-          out="tetherdesk-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          ./packaging/macos/make_dmg.sh "${GITHUB_REF_NAME#v}"
+          echo "ASSET=$(ls dist/*.dmg)" >> "$GITHUB_ENV"
+
+      - name: Package (Windows installer)
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        shell: bash
+        run: |
+          stage="$RUNNER_TEMP/stage"
+          mkdir -p "$stage/web"
+          cp build/Release/TetherDesk.exe build/Release/tetherdesk-host.exe build/Release/tetherdesk-probe.exe README.md "$stage/"
+          cp build-web/index.html build-web/index.js build-web/index.wasm "$stage/web/"
+          iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          if [ ! -f "$iscc" ]; then choco install innosetup -y --no-progress; fi
+          "$iscc" -Q "-DAppVersion=${GITHUB_REF_NAME#v}" "-DStageDir=$(cygpath -w "$stage")" \
+              "-O$(cygpath -w "$PWD/dist")" packaging/windows/tetherdesk.iss
+          echo "ASSET=$(ls dist/*.exe)" >> "$GITHUB_ENV"
+
+      - name: Package (Linux .zip)
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Linux'
+        shell: bash
+        run: |
+          out="TetherDesk-${GITHUB_REF_NAME#v}-linux-x64"
           mkdir -p "$out/web"
+          cp build/TetherDesk build/tetherdesk-host build/tetherdesk-probe README.md "$out/"
           cp build-web/index.html build-web/index.js build-web/index.wasm "$out/web/"
-          cp README.md "$out/"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cp build/Release/*.exe "$out/"
-            cp "$RUNNER_TEMP/SDL2-$SDL_VERSION/lib/x64/SDL2.dll" "$out/"
-            7z a "$out.zip" "$out" > /dev/null
-          else
-            cp build/tetherdesk build/tetherdesk-host build/tetherdesk-probe "$out/"
-            zip -qr "$out.zip" "$out"
-          fi
+          zip -qr "$out.zip" "$out"
           echo "ASSET=$out.zip" >> "$GITHUB_ENV"
 
       - name: Publish release
@@ -108,3 +110,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ASSET }}
+          body: |
+            **Downloads**
+            - macOS 12.3+ (Apple Silicon): `TetherDesk-*-macOS.dmg` - open it and drag TetherDesk to Applications.
+              The app isn't notarized yet: the first time, right-click it and choose **Open**.
+            - Windows 10/11 (x64): `TetherDesk-Setup-*.exe`. SmartScreen may warn about an unknown
+              publisher - choose **More info > Run anyway**.
+            - Linux (x64, X11): `TetherDesk-*-linux-x64.zip` (needs libsdl2, libx11, libxtst).
+
+            Use **Connect to a PC** to control another computer, or **Share this PC** to let someone connect to yours.

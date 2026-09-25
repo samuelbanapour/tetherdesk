@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(TetherDesk VERSION 1.0.0 LANGUAGES C CXX)
+if(APPLE)
+  # Must happen before any subproject (static SDL) is added.
+  enable_language(OBJC OBJCXX)
+endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -67,7 +71,21 @@ if(EMSCRIPTEN)
   return()
 endif()
 
-find_package(SDL2 CONFIG QUIET)
+if(TD_STATIC_SDL)
+  # Build official SDL2 from source as a static library so release binaries
+  # have no runtime dependency (Homebrew now ships SDL2 as sdl2-compat).
+  include(FetchContent)
+  set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+  set(SDL_STATIC ON CACHE BOOL "" FORCE)
+  set(SDL_TEST OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(SDL2
+    URL https://github.com/libsdl-org/SDL/releases/download/release-2.30.9/SDL2-2.30.9.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(SDL2)
+  set(SDL2_FOUND TRUE)
+else()
+  find_package(SDL2 CONFIG QUIET)
+endif()
 if(NOT SDL2_FOUND)
   find_package(PkgConfig QUIET)
   if(PkgConfig_FOUND)
@@ -75,9 +93,23 @@ if(NOT SDL2_FOUND)
   endif()
 endif()
 
-if(TARGET SDL2::SDL2 OR TARGET PkgConfig::SDL2)
-  add_executable(tetherdesk ${CLIENT_SOURCES} client/transport_native.cpp)
+if(TARGET SDL2::SDL2 OR TARGET SDL2::SDL2-static OR TARGET PkgConfig::SDL2)
+  set(TD_APP_EXTRA "")
+  if(WIN32)
+    set(TD_APP_EXTRA WIN32 packaging/windows/tetherdesk.rc)  # GUI app + icon
+  elseif(APPLE)
+    set(TD_APP_EXTRA MACOSX_BUNDLE packaging/macos/tetherdesk.icns)
+  endif()
+  add_executable(tetherdesk ${TD_APP_EXTRA} ${CLIENT_SOURCES} client/transport_native.cpp client/host_process.cpp)
   target_compile_options(tetherdesk PRIVATE ${TD_WARNINGS})
+  set_target_properties(tetherdesk PROPERTIES OUTPUT_NAME TetherDesk)
+  if(APPLE)
+    # TetherDesk.app: the viewer, with the host bundled next to it so the
+    # "Share this PC" tab works (see packaging/macos/make_dmg.sh).
+    configure_file(packaging/macos/Info.plist.in ${CMAKE_BINARY_DIR}/Info.plist @ONLY)
+    set_target_properties(tetherdesk PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${CMAKE_BINARY_DIR}/Info.plist)
+    set_source_files_properties(packaging/macos/tetherdesk.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+  endif()
   if(TARGET SDL2::SDL2main)
     target_link_libraries(tetherdesk PRIVATE SDL2::SDL2main)
   endif()
@@ -101,7 +133,6 @@ set(HOST_SOURCES
   host/platform_demo.cpp)
 
 if(APPLE)
-  enable_language(OBJCXX)
   list(APPEND HOST_SOURCES host/platform_mac.mm)
 elseif(WIN32)
   list(APPEND HOST_SOURCES host/platform_win.cpp)
@@ -126,6 +157,17 @@ elseif(WIN32)
 else()
   find_package(X11 REQUIRED)
   target_link_libraries(tetherdesk-host PRIVATE X11::X11 X11::Xtst)
+endif()
+
+if(TARGET tetherdesk)
+  # Keep the host next to the viewer executable (inside the .app on macOS).
+  add_dependencies(tetherdesk tetherdesk-host)
+  add_custom_command(TARGET tetherdesk POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:tetherdesk-host> $<TARGET_FILE_DIR:tetherdesk>/
+    VERBATIM)
+endif()
+if(WIN32)
+  target_sources(tetherdesk-host PRIVATE packaging/windows/tetherdesk.rc)
 endif()
 
 # Headless client for health checks / end-to-end tests (no SDL needed).

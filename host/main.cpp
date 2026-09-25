@@ -231,7 +231,8 @@ int main(int argc, char **argv) {
 
     if (cfg.web_root.empty()) {
         std::string d = exe_dir(argv[0]);
-        for (const std::string &cand : {d + "/web", d + "/../web", d + "/../share/tetherdesk/web", std::string("web")})
+        for (const std::string &cand : {d + "/web", d + "/../Resources/web", d + "/../web", d + "/../share/tetherdesk/web",
+                                         std::string("web")})
             if (dir_has_index(cand)) {
                 cfg.web_root = cand;
                 break;

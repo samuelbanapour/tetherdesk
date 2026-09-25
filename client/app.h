@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "host_process.h"
 #include "rd_bytes.h"
 #include "rd_secure.h"
 #include "store.h"
@@ -33,6 +34,8 @@ struct Options {
     bool show_stats = false;
     bool open_menu = false;         // open the session menu once connected
     bool trust_new_hosts = false;   // skip the first-connection fingerprint prompt
+    bool start_sharing = false;     // open "Share this PC" and turn sharing on
+    bool share_demo = false;        // ...sharing the demo desktop (not saved)
     std::string screenshot_path;    // save the rendered window, then quit
     double screenshot_after = 3.0;  // seconds after start
 };
@@ -50,6 +53,7 @@ private:
     enum class Phase { None, Connecting, Hello, Verify, Auth, Live };
     enum class Dialog { None, EditPc, Password, Verify, Connecting };
     enum class ScaleMode { Fit, Native };
+    enum class HomeTab { Connect, Share };
 
     struct Toast {
         std::string text;
@@ -116,6 +120,10 @@ private:
     // drawing
     void render();
     void draw_home();
+    void draw_share(float top);
+    void start_sharing();
+    void stop_sharing();
+    void poll_share_log();
     void draw_web_connect();
     void draw_dialog();
     void draw_session();
@@ -155,6 +163,18 @@ private:
     std::map<std::string, SDL_Texture *> thumbs_;
     std::string pending_delete_;
     float home_scroll_ = 0;
+    HomeTab tab_ = HomeTab::Connect;
+
+    // "Share this PC": the bundled host runs as a child process.
+#ifndef __EMSCRIPTEN__
+    HostProcess host_;
+#endif
+    bool sharing_ = false;
+    std::string share_log_path_, share_identity_, share_error_;
+    std::vector<std::string> share_urls_, share_activity_;
+    bool share_needs_screen_perm_ = false, share_needs_input_perm_ = false;
+    bool share_show_pw_ = false;
+    uint32_t share_log_read_ = 0;
 
     // web connect form
     std::string f_host_, f_port_, f_name_, f_password_;

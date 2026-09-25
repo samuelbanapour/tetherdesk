@@ -3,3 +3,5 @@ build-web/
 ._*
 .DS_Store
 *.bmp
+dist/
+build-release/
