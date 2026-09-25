@@ -27,7 +27,8 @@ private:
     int exit_code_ = -1;
 };
 
-// Directory containing the running executable (no trailing separator).
+// Full path of the running executable, and its directory (no trailing separator).
+std::string executable_path();
 std::string executable_dir();
 
 }  // namespace td

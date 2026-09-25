@@ -43,6 +43,60 @@ if(WIN32)
   target_link_libraries(td_common PUBLIC ws2_32 bcrypt)
 endif()
 
+# ---------------------------------------------------------------- relay
+# Internet relay (runs on a server; see relay/). TD_RELAY_ONLY builds just it.
+option(TD_RELAY_ONLY "Build only the relay server" OFF)
+if(NOT EMSCRIPTEN)
+  add_executable(tetherdesk-relay relay/relay.cpp)
+  target_link_libraries(tetherdesk-relay PRIVATE td_common)
+  target_compile_options(tetherdesk-relay PRIVATE ${TD_WARNINGS})
+endif()
+if(TD_RELAY_ONLY)
+  return()
+endif()
+
+if(NOT EMSCRIPTEN)
+# ---------------------------------------------------------------- host
+set(HOST_SOURCES
+  host/main.cpp
+  host/server.cpp
+  host/encoder.cpp
+  host/keymap.cpp
+  host/platform_demo.cpp)
+
+if(APPLE)
+  list(APPEND HOST_SOURCES host/platform_mac.mm)
+elseif(WIN32)
+  list(APPEND HOST_SOURCES host/platform_win.cpp)
+else()
+  list(APPEND HOST_SOURCES host/platform_x11.cpp)
+endif()
+
+# The host is a library so it can also be built *into* the desktop app
+# ("TetherDesk --run-host"), which makes the app a single self-contained file.
+add_library(td_host STATIC ${HOST_SOURCES})
+target_include_directories(td_host PUBLIC host)
+target_link_libraries(td_host PUBLIC td_common)
+target_compile_options(td_host PRIVATE ${TD_WARNINGS})
+find_package(Threads REQUIRED)
+target_link_libraries(td_host PUBLIC Threads::Threads)
+add_executable(tetherdesk-host host/host_entry.cpp)
+target_link_libraries(tetherdesk-host PRIVATE td_host)
+
+if(APPLE)
+  set_source_files_properties(host/platform_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  target_link_libraries(td_host PUBLIC
+    "-framework ScreenCaptureKit" "-framework CoreGraphics" "-framework CoreMedia"
+    "-framework CoreVideo" "-framework AppKit" "-framework ApplicationServices")
+elseif(WIN32)
+  target_link_libraries(td_host PUBLIC user32 gdi32 iphlpapi)
+else()
+  find_package(X11 REQUIRED)
+  target_link_libraries(td_host PUBLIC X11::X11 X11::Xtst)
+endif()
+
+endif()
+
 # ---------------------------------------------------------------- viewer
 # The viewer is one C++ codebase built two ways: natively against SDL2, and
 # with Emscripten into WebAssembly for browsers.
@@ -113,6 +167,8 @@ if(TARGET SDL2::SDL2 OR TARGET SDL2::SDL2-static OR TARGET PkgConfig::SDL2)
   if(TARGET SDL2::SDL2main)
     target_link_libraries(tetherdesk PRIVATE SDL2::SDL2main)
   endif()
+  target_link_libraries(tetherdesk PRIVATE td_host)
+  target_compile_definitions(tetherdesk PRIVATE TD_EMBED_HOST=1)
   if(TD_STATIC_SDL AND TARGET SDL2::SDL2-static)
     target_link_libraries(tetherdesk PRIVATE td_common SDL2::SDL2-static)
   elseif(TARGET SDL2::SDL2)
@@ -124,48 +180,6 @@ else()
   message(WARNING "SDL2 not found: the native viewer will not be built (host still builds)")
 endif()
 
-# ---------------------------------------------------------------- host
-set(HOST_SOURCES
-  host/main.cpp
-  host/server.cpp
-  host/encoder.cpp
-  host/keymap.cpp
-  host/platform_demo.cpp)
-
-if(APPLE)
-  list(APPEND HOST_SOURCES host/platform_mac.mm)
-elseif(WIN32)
-  list(APPEND HOST_SOURCES host/platform_win.cpp)
-else()
-  list(APPEND HOST_SOURCES host/platform_x11.cpp)
-endif()
-
-add_executable(tetherdesk-host ${HOST_SOURCES})
-target_include_directories(tetherdesk-host PRIVATE host)
-target_link_libraries(tetherdesk-host PRIVATE td_common)
-target_compile_options(tetherdesk-host PRIVATE ${TD_WARNINGS})
-find_package(Threads REQUIRED)
-target_link_libraries(tetherdesk-host PRIVATE Threads::Threads)
-
-if(APPLE)
-  set_source_files_properties(host/platform_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-  target_link_libraries(tetherdesk-host PRIVATE
-    "-framework ScreenCaptureKit" "-framework CoreGraphics" "-framework CoreMedia"
-    "-framework CoreVideo" "-framework AppKit" "-framework ApplicationServices")
-elseif(WIN32)
-  target_link_libraries(tetherdesk-host PRIVATE user32 gdi32 iphlpapi)
-else()
-  find_package(X11 REQUIRED)
-  target_link_libraries(tetherdesk-host PRIVATE X11::X11 X11::Xtst)
-endif()
-
-if(TARGET tetherdesk)
-  # Keep the host next to the viewer executable (inside the .app on macOS).
-  add_dependencies(tetherdesk tetherdesk-host)
-  add_custom_command(TARGET tetherdesk POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:tetherdesk-host> $<TARGET_FILE_DIR:tetherdesk>/
-    VERBATIM)
-endif()
 if(WIN32)
   target_sources(tetherdesk-host PRIVATE packaging/windows/tetherdesk.rc)
 endif()

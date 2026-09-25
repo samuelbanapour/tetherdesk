@@ -43,6 +43,12 @@ struct ServerConfig {
     int encoder_threads = 0;      // 0 = auto
     uint8_t static_priv[32] = {}; // host identity key (X25519)
     uint8_t static_pub[32] = {};
+    // Internet relay (empty host = disabled): lets viewers anywhere reach
+    // this host by ID, with no port forwarding.
+    std::string relay_host;
+    int relay_port = 80;
+    std::string relay_id;         // 9 digits
+    std::string relay_key;        // 32 hex chars, proves we own the ID
 };
 
 class Server {
@@ -60,7 +66,7 @@ private:
         std::string path;
     };
 
-    enum class State { Http, Hello, Auth, Active, Closing };
+    enum class State { Http, RelayUpgrade, RelayCtl, Hello, Auth, Active, Closing };
 
     struct Conn {
         rd_socket sock = RD_INVALID_SOCKET;
@@ -69,9 +75,14 @@ private:
         rd_buf in{}, out{};
         size_t out_off = 0;  // bytes of `out` already written to the socket
         rd_ws_reader ws{};
-        uint64_t created_us = 0, last_rx_us = 0;
+        uint64_t created_us = 0, last_rx_us = 0, last_ping_us = 0;
         bool close_after_flush = false;
         bool dead = false;
+        // Outbound connections to the relay: we are the WebSocket *client*.
+        bool client_ws = false;
+        bool relay_ctl = false;
+        bool tcp_pending = false;
+        char ws_accept[29] = "";
 
         // Session state (valid once authenticated).
         uint32_t id = 0;
@@ -114,6 +125,10 @@ private:
     };
 
     void accept_new();
+    void open_relay_conn(bool control, const std::string &ticket, const std::string &viewer_ip);
+    void finish_relay_upgrade(Conn &c);
+    void maintain_relay();
+    void ws_frame(Conn &c, int opcode, const void *p, size_t n);
     void read_conn(Conn &c);
     void handle_http(Conn &c);
     void serve_file(Conn &c, std::string path);
@@ -164,6 +179,9 @@ private:
     std::map<std::string, Failures> failures_;
     std::vector<uint64_t> recent_failures_;  // all addresses, for a global rate limit
     rd_buf scratch_{};
+    Conn *relay_ctl_ = nullptr;
+    uint64_t relay_next_us_ = 0, relay_backoff_us_ = 2000000;
+    bool relay_online_ = false;
 };
 
 }  // namespace td

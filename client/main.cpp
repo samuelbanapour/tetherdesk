@@ -6,6 +6,7 @@
 //          carry "#password=...&name=..." to pre-fill the form.
 #include <SDL.h>
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -18,7 +19,12 @@
 #endif
 
 #include "app.h"
+#include "host_process.h"
 #include "rd_proto.h"
+
+#ifdef TD_EMBED_HOST
+int td_host_main(int argc, char **argv);
+#endif
 
 namespace {
 
@@ -45,9 +51,11 @@ void parse_hash(const std::string &hash, td::Options &o) {
         else if (k == "name") o.name = v;
         else if (k == "host") o.host = v;
         else if (k == "port") o.port = std::atoi(v.c_str());
+        else if (k == "relay") o.web_relay = true;  // page was served by the internet relay
+        else if (k == "id") o.connect_id = v;
         i = amp == std::string::npos ? amp : amp + 1;
     }
-    if (!o.password.empty()) o.autoconnect = true;
+    if (!o.password.empty() && !o.web_relay) o.autoconnect = true;
 }
 
 #ifndef __EMSCRIPTEN__
@@ -64,10 +72,17 @@ void web_tick(void *arg) {
 }  // namespace
 
 int main(int argc, char **argv) {
+#ifdef TD_EMBED_HOST
+    // The app doubles as the host: "Share this PC" runs it with --run-host.
+    if (argc > 1 && std::strcmp(argv[1], "--run-host") == 0) return td_host_main(argc - 1, argv + 1);
+#endif
     td::Options opts;
 #ifdef __EMSCRIPTEN__
     if (argc > 1 && argv[1][0]) opts.host = argv[1];
     if (argc > 2 && argv[2][0]) opts.port = std::atoi(argv[2]);
+    opts.web_secure = argc > 4 && std::strcmp(argv[4], "https:") == 0;
+    opts.web_host = opts.host;
+    opts.web_port = opts.port;
     opts.name = "Browser viewer";
     if (argc > 3) parse_hash(argv[3], opts);
 #else
@@ -86,6 +101,8 @@ int main(int argc, char **argv) {
         else if (a == "--trust") opts.trust_new_hosts = true;
         else if (a == "--share") opts.start_sharing = true;
         else if (a == "--share-demo") opts.start_sharing = opts.share_demo = true;
+        else if (a == "--quick-support") opts.quick_support = true;
+        else if (a == "--relay") opts.relay = next();
         else if (a == "--screenshot") opts.screenshot_path = next();
         else if (a == "--after") opts.screenshot_after = std::atof(next().c_str());
         else if (a == "-h" || a == "--help") {
@@ -117,6 +134,12 @@ int main(int argc, char **argv) {
         }
     }
     if (!opts.password.empty()) opts.autoconnect = true;
+    // A copy named "...QuickSupport..." opens straight into sharing: the
+    // person being helped just runs it and reads out the ID and password.
+    std::string exe = td::executable_path();
+    for (auto &ch : exe) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    if (exe.find("quicksupport") != std::string::npos) opts.quick_support = true;
+    if (opts.quick_support) opts.start_sharing = true;
 #endif
     if (opts.port <= 0) opts.port = RD_DEFAULT_PORT;
 

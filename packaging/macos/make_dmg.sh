@@ -40,3 +40,13 @@ rm -f "$out"
 hdiutil create -volname "TetherDesk" -srcfolder "$stage" -ov -format UDZO "$out" >/dev/null
 rm -rf "$stage"
 echo "built $out"
+
+# QuickSupport: the same app under a name that makes it open straight into
+# "share this computer" mode - for someone who just needs help, no install.
+qs_stage="$(mktemp -d)"
+ditto "$app" "$qs_stage/TetherDesk QuickSupport.app"
+qs="dist/TetherDesk-QuickSupport-macOS.zip"
+rm -f "$qs"
+(cd "$qs_stage" && ditto -c -k --keepParent "TetherDesk QuickSupport.app" "$OLDPWD/$qs")
+rm -rf "$qs_stage"
+echo "built $qs"

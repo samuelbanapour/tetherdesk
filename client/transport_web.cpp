@@ -12,17 +12,18 @@ class WebTransport : public Transport {
 public:
     ~WebTransport() override { close(); }
 
-    void connect(const std::string &host, int port) override {
+    void connect(const std::string &host, int port, const std::string &path, bool secure) override {
         close();
         queue_.clear();
         error_.clear();
+        generic_error_ = false;
         if (!emscripten_websocket_is_supported()) {
             state_ = State::Closed;
             error_ = "this browser has no WebSocket support";
             return;
         }
         std::string h = host.find(':') != std::string::npos ? "[" + host + "]" : host;
-        url_ = "ws://" + h + ":" + std::to_string(port) + "/ws";
+        url_ = std::string(secure ? "wss://" : "ws://") + h + ":" + std::to_string(port) + path;
         EmscriptenWebSocketCreateAttributes attr;
         emscripten_websocket_init_create_attributes(&attr);
         attr.url = url_.c_str();
@@ -83,10 +84,14 @@ private:
         auto *t = static_cast<WebTransport *>(user);
         if (t->error_.empty())
             t->error_ = t->state_ == State::Open ? "connection lost" : "could not connect - is the host running?";
+        t->generic_error_ = true;
         return EM_TRUE;
     }
-    static EM_BOOL on_close(int, const EmscriptenWebSocketCloseEvent *, void *user) {
+    static EM_BOOL on_close(int, const EmscriptenWebSocketCloseEvent *e, void *user) {
         auto *t = static_cast<WebTransport *>(user);
+        if (t->generic_error_) t->error_.clear();
+        if (e->code == 4404) t->error_ = "That computer isn't online right now. Ask them to open TetherDesk and turn on sharing.";
+        else if (e->code == 4408) t->error_ = "That computer didn't answer - try again in a moment.";
         if (t->error_.empty()) t->error_ = "the host closed the connection";
         t->state_ = State::Closed;
         return EM_TRUE;
@@ -95,6 +100,7 @@ private:
     EMSCRIPTEN_WEBSOCKET_T ws_ = 0;
     State state_ = State::Idle;
     std::string url_, error_;
+    bool generic_error_ = false;
     std::vector<std::vector<uint8_t>> queue_;
 };
 

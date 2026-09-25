@@ -29,6 +29,10 @@
 #include "rd_secure.h"
 #include "server.h"
 
+#ifndef TD_DEFAULT_RELAY
+#define TD_DEFAULT_RELAY "tetherdesk-relay.fly.dev"
+#endif
+
 namespace {
 
 void usage() {
@@ -47,6 +51,8 @@ void usage() {
         "  --downloads DIR     where received files are saved\n"
         "  --native-res        capture HiDPI displays at full pixel density (more bandwidth)\n"
         "  --key-file PATH     host identity key (default: in the user config directory)\n"
+        "  --relay HOST[:PORT] internet relay to register with (default " TD_DEFAULT_RELAY ")\n"
+        "  --no-relay          LAN/port-forwarding only: don't register with the relay\n"
         "  --threads N         encoder threads (default: CPU cores, max 8)\n"
         "  --demo              share a synthetic demo desktop (no OS permissions needed)\n"
         "  --no-console        don't read operator commands from stdin\n"
@@ -158,15 +164,52 @@ bool load_or_create_host_key(const std::string &path, uint8_t priv[32], uint8_t 
     return ok;
 }
 
+// A stable 9-digit relay ID plus the secret that proves we own it, so people
+// can reach this computer by the same ID every time.
+bool load_or_create_relay_id(const std::string &path, std::string &id, std::string &key) {
+    if (FILE *f = std::fopen(path.c_str(), "r")) {
+        char a[32] = "", b[80] = "";
+        bool ok = std::fscanf(f, "%31s %79s", a, b) == 2;
+        std::fclose(f);
+        if (ok && std::strlen(a) == 9 && std::strlen(b) == 32) {
+            id = a;
+            key = b;
+            return true;
+        }
+    }
+    uint8_t r[20];
+    if (rd_random(r, sizeof r) != 0) return false;
+    uint32_t n = (uint32_t(r[0]) << 24 | uint32_t(r[1]) << 16 | uint32_t(r[2]) << 8 | r[3]) % 900000000u + 100000000u;
+    id = std::to_string(n);
+    static const char hex[] = "0123456789abcdef";
+    key.clear();
+    for (int i = 4; i < 20; i++) key += hex[r[i] >> 4], key += hex[r[i] & 15];
+    FILE *f = std::fopen(path.c_str(), "w");
+    if (!f) return false;
+#ifndef _WIN32
+    chmod(path.c_str(), 0600);
+#endif
+    std::fprintf(f, "%s %s\n", id.c_str(), key.c_str());
+    std::fclose(f);
+    return true;
+}
+
+std::string pretty_id(const std::string &id) {
+    return id.size() == 9 ? id.substr(0, 3) + " " + id.substr(3, 3) + " " + id.substr(6) : id;
+}
+
 void on_signal(int) { td::Server::stop(); }
 
 }  // namespace
 
-int main(int argc, char **argv) {
+// Entry point shared by the standalone tetherdesk-host executable
+// (host_entry.cpp) and the desktop app's "--run-host" mode.
+int td_host_main(int argc, char **argv) {
     td::ServerConfig cfg;
     td::PlatformOptions popts;
     bool demo = false, list_only = false;
     std::string key_file;
+    std::string relay = TD_DEFAULT_RELAY;
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -189,6 +232,8 @@ int main(int argc, char **argv) {
         else if (a == "--downloads") cfg.downloads_dir = next();
         else if (a == "--native-res") popts.native_resolution = true;
         else if (a == "--key-file") key_file = next();
+        else if (a == "--relay") relay = next();
+        else if (a == "--no-relay") relay.clear();
         else if (a == "--threads") cfg.encoder_threads = std::max(1, std::min(64, std::atoi(next())));
         else if (a == "--demo") demo = true;
         else if (a == "--no-console") cfg.console = false;
@@ -244,6 +289,16 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "error: cannot read or create the host key at %s\n", key_file.c_str());
         return 1;
     }
+    if (!relay.empty()) {
+        size_t colon = relay.rfind(':');
+        cfg.relay_host = colon == std::string::npos ? relay : relay.substr(0, colon);
+        cfg.relay_port = colon == std::string::npos ? 80 : std::atoi(relay.substr(colon + 1).c_str());
+        std::string dir = key_file.substr(0, key_file.find_last_of("/\\"));
+        if (!load_or_create_relay_id(dir + "/relay_id", cfg.relay_id, cfg.relay_key)) {
+            std::fprintf(stderr, "warning: cannot store relay ID - internet access disabled\n");
+            cfg.relay_host.clear();
+        }
+    }
     char fingerprint[40];
     rd_fingerprint(cfg.static_pub, fingerprint);
     const bool loopback = cfg.bind == "127.0.0.1" || cfg.bind == "::1";
@@ -264,15 +319,17 @@ int main(int argc, char **argv) {
         std::printf("  Sharing   %s (%dx%d)\n", displays[size_t(cfg.display)].name.c_str(),
                     displays[size_t(cfg.display)].width, displays[size_t(cfg.display)].height);
     std::printf("  Password  %s%s\n", cfg.password.c_str(), generated ? "   (generated - use --password to choose)" : "");
+    if (!cfg.relay_host.empty())
+        std::printf("  ID        %s   (connect from anywhere via %s)\n", pretty_id(cfg.relay_id).c_str(),
+                    cfg.relay_host.c_str());
     std::printf("  Identity  %s   (viewers see this the first time they connect)\n", fingerprint);
     std::printf("  Mode      %s, up to %d fps, %d viewers max%s\n", cfg.view_only ? "view only" : "full control",
                 cfg.max_fps, cfg.max_viewers, cfg.allow_files ? "" : ", file transfer off");
     std::printf("  Web       %s\n", cfg.web_root.empty() ? "(web viewer not built - native viewer only)" : cfg.web_root.c_str());
     std::printf("\n  Connect a browser or `tetherdesk <address>` to:\n    http://localhost:%d/\n", cfg.port);
     if (cfg.bind != "127.0.0.1" && cfg.bind != "::1") print_lan_urls(cfg.port);
-    std::printf("\n  Sessions are end-to-end encrypted (X25519 + ChaCha20-Poly1305).\n"
-                "  To reach this host from the internet, forward TCP port %d on your router to it\n"
-                "  (or use a VPN such as Tailscale) - see README.\n",
+    std::printf("\n  Sessions are end-to-end encrypted (X25519 + ChaCha20-Poly1305); the relay only\n"
+                "  forwards ciphertext. Local network: port %d.\n",
                 cfg.port);
     if (cfg.console) std::printf("  Type /help for operator commands.\n");
     std::printf("\n");

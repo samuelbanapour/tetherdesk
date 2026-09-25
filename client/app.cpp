@@ -41,6 +41,26 @@ std::string relative_time(int64_t t) {
     return std::to_string(d / 86400) + " days ago";
 }
 
+// "728 857 467", "728-857-467" or "728857467" -> "728857467"; else "".
+std::string relay_id_of(const std::string &s) {
+    std::string d;
+    for (char c : s) {
+        if (c >= '0' && c <= '9') d += c;
+        else if (c != ' ' && c != '-') return "";
+    }
+    return d.size() == 9 ? d : "";
+}
+
+std::string pretty_id(const std::string &id) {
+    return id.size() == 9 ? id.substr(0, 3) + " " + id.substr(3, 3) + " " + id.substr(6) : id;
+}
+
+std::string display_address(const std::string &host, int port) {
+    std::string id = relay_id_of(host);
+    if (!id.empty()) return "ID " + pretty_id(id);
+    return host + (port != RD_DEFAULT_PORT ? ":" + std::to_string(port) : "");
+}
+
 void pop_utf8(std::string &s) {
     if (s.empty()) return;
     do s.pop_back();
@@ -56,7 +76,7 @@ App::App(SDL_Window *window, SDL_Renderer *renderer, Options opts)
     store_.load();
     transport_ = Transport::create();
     show_stats_ = opts_.show_stats;
-    f_host_ = opts_.host;
+    f_host_ = opts_.web_relay ? opts_.connect_id : opts_.host;
     f_port_ = std::to_string(opts_.port);
     f_name_ = opts_.name;
     f_password_ = opts_.password;
@@ -181,14 +201,29 @@ void App::begin_connect(const SavedPc &pc) {
 void App::start_connect() {
     error_.clear();
     dialog_error_.clear();
-    if (target_.host.empty()) return fail_connect("Enter the PC's address");
-    if (target_.port <= 0 || target_.port > 65535) return fail_connect("Port must be 1-65535");
+    if (target_.host.empty()) return fail_connect("Enter the computer's ID or address");
+    const std::string id = relay_id_of(target_.host);
+    if (!id.empty()) target_.host = id;  // store IDs in one canonical form
+    else if (target_.port <= 0 || target_.port > 65535) return fail_connect("Port must be 1-65535");
     user_closed_ = false;
     phase_ = Phase::Connecting;
     rd_wipe(&ch_, sizeof ch_);
     rd_x25519_keypair(ce_priv_, ce_);
     if (screen_ != Screen::Session) dialog_ = Dialog::Connecting;
-    transport_->connect(target_.host, target_.port);
+    if (!id.empty()) {
+        // Through the internet relay: both computers only connect outwards.
+        if (is_web()) {
+            if (opts_.web_relay) transport_->connect(opts_.web_host, opts_.web_port, "/v/" + id, opts_.web_secure);
+            else transport_->connect(opts_.relay, 443, "/v/" + id, true);
+        } else {
+            size_t c = opts_.relay.rfind(':');
+            std::string rh = c == std::string::npos ? opts_.relay : opts_.relay.substr(0, c);
+            int rp = c == std::string::npos ? 80 : std::atoi(opts_.relay.substr(c + 1).c_str());
+            transport_->connect(rh, rp, "/v/" + id);
+        }
+    } else {
+        transport_->connect(target_.host, target_.port);
+    }
 }
 
 void App::send_auth() {
@@ -980,6 +1015,10 @@ void App::draw_home() {
     draw_logo(ui_, pad, 16, 1);
     ui_.text(pad + 46, 16, "TetherDesk", theme::text, 1.45f);
     ui_.text(pad + 46, 42, "Remote Desktop", theme::dim);
+    if (opts_.quick_support) {
+        draw_share(96);
+        return;
+    }
     // Tabs, Remote Desktop style: connect out, or let others connect in.
     {
         const float tw = 150, tx = std::max(pad + 230, W / 2 - tw);
@@ -1007,9 +1046,10 @@ void App::draw_home() {
     float y = 96;
     const float qw = std::min(560.f, W - 2 * pad - 130);
     if (!modal) {
-        form_field({pad, y + 22, qw, 38}, "Quick connect - PC name or address (host or host:port)", quick_host_);
+        form_field({pad, y + 22, qw, 38}, "Quick connect - computer ID (e.g. 728 857 467) or address", quick_host_);
     } else {
-        ui_.field({pad, y + 22, qw, 38}, "Quick connect - PC name or address (host or host:port)", quick_host_, false, false);
+        ui_.field({pad, y + 22, qw, 38}, "Quick connect - computer ID (e.g. 728 857 467) or address", quick_host_, false,
+                  false);
     }
     bool go = ui_.button({pad + qw + 10, y + 22, 110, 38}, "Connect", !quick_host_.empty(), !quick_host_.empty());
     if (!modal && submit_ && focus_ == 0 && !quick_host_.empty()) go = true;
@@ -1018,12 +1058,14 @@ void App::draw_home() {
         std::string h = quick_host_;
         size_t colon = h.rfind(':');
         pc.port = RD_DEFAULT_PORT;
-        if (colon != std::string::npos && h.find(':') == colon) {
+        if (!relay_id_of(h).empty()) {
+            h = relay_id_of(h);
+        } else if (colon != std::string::npos && h.find(':') == colon) {
             pc.port = std::atoi(h.substr(colon + 1).c_str());
             h = h.substr(0, colon);
         }
         pc.host = h;
-        pc.label = h;
+        pc.label = relay_id_of(h).empty() ? h : "Computer " + pretty_id(h);
         pc.user_name = opts_.name;
         for (auto &s : store_.pcs)
             if (s.host == pc.host && s.port == pc.port) pc = s;
@@ -1084,7 +1126,7 @@ void App::draw_home() {
             ui_.fill({mx - 16, my + 24, 32, 3}, theme::dim, 1);
         }
         ui_.text(cx + 14, cy + 160, ellipsize(ui_, pc.label, cw - 28, 1.1f), theme::text, 1.1f);
-        std::string sub = pc.host + (pc.port != RD_DEFAULT_PORT ? ":" + std::to_string(pc.port) : "");
+        std::string sub = display_address(pc.host, pc.port);
         ui_.text(cx + 14, cy + 184, ellipsize(ui_, sub, cw - 110), theme::dim);
         std::string when = relative_time(pc.last_used);
         ui_.text(cx + cw - 14 - ui_.text_width(when), cy + 184, when, theme::dim);
@@ -1142,16 +1184,17 @@ void App::start_sharing() {
         store_.share_password = random_share_password();
         store_.save();
     }
-    std::string exe = executable_dir() + "/tetherdesk-host";
-#ifdef _WIN32
-    exe += ".exe";
-#endif
+    // The host is built into this same executable ("--run-host").
+    std::string exe = executable_path();
     share_log_path_ = (store_.dir().empty() ? std::string(".") + "/" : store_.dir()) + "host.log";
-    std::vector<std::string> args = {"--password", store_.share_password, "--no-console"};
+    std::vector<std::string> args = {"--run-host", "--password", store_.share_password, "--no-console",
+                                     "--relay", opts_.relay};
     if (store_.share_view_only) args.push_back("--view-only");
     if (store_.share_demo || opts_.share_demo) args.push_back("--demo");
     share_error_.clear();
     share_identity_.clear();
+    share_id_.clear();
+    share_relay_online_ = false;
     share_urls_.clear();
     share_activity_.clear();
     share_needs_screen_perm_ = share_needs_input_perm_ = false;
@@ -1182,14 +1225,24 @@ void App::poll_share_log() {
     while (std::getline(f, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         size_t p;
-        if ((p = line.find("Identity")) != std::string::npos && p < 6) {
+        if (line.rfind("  ID ", 0) == 0) {
+            std::string v = line.substr(5);
+            v.erase(0, v.find_first_not_of(' '));
+            share_id_ = relay_id_of(v.substr(0, 11));
+            size_t via = line.find("via ");
+            if (via != std::string::npos) share_relay_ = line.substr(via + 4, line.find(')', via) - via - 4);
+        } else if (line.find("relay: online as") != std::string::npos) {
+            share_relay_online_ = true;
+        } else if (line.find("relay connection lost") != std::string::npos) {
+            share_relay_online_ = false;
+        } else if ((p = line.find("Identity")) != std::string::npos && p < 6) {
             std::string v = line.substr(p + 8);
             v.erase(0, v.find_first_not_of(' '));
             share_identity_ = v.substr(0, v.find(' '));
         } else if ((p = line.find("http://")) != std::string::npos && line.find("localhost") == std::string::npos) {
             std::string u = line.substr(p);
             urls.push_back(u.substr(0, u.find_first_of(" \t")));
-        } else if (line.size() > 11 && line[0] == '[' && line[9] == ']') {
+        } else if (line.size() > 11 && line[0] == '[' && line[9] == ']' && line.find("relay:") == std::string::npos) {
             activity.push_back(line);
         } else if (line.rfind("error:", 0) == 0) {
             error = line.substr(7);
@@ -1215,10 +1268,14 @@ void App::draw_share(float top) {
     const float cw = std::min(720.f, W - 2 * pad);
     const float x = pad;
     float y = top + 8;
+    const bool qs = opts_.quick_support;
 
-    ui_.text(x, y, "Share this PC", theme::text, 1.3f);
+    ui_.text(x, y, qs ? "Get help with this computer" : "Share this PC", theme::text, 1.3f);
     y += 34;
-    ui_.text(x, y, "Let someone connect to this computer with TetherDesk - from the app or a web browser.", theme::dim);
+    ui_.text(x, y,
+             qs ? "Tell the person helping you the ID and password below. Close this app to end the session."
+                : "Let someone connect to this computer from anywhere - with the TetherDesk app or a web browser.",
+             theme::dim);
     y += 36;
 
     // Big on/off switch.
@@ -1228,7 +1285,9 @@ void App::draw_share(float top) {
     const bool starting = sharing_ && share_identity_.empty();
     std::string status = !sharing_ ? "Off - nobody can connect"
                          : starting ? "Starting..."
-                                    : "On - waiting for connections";
+                         : share_relay_online_ ? "On - reachable from anywhere"
+                         : share_id_.empty() ? "On - local network only"
+                                             : "On - connecting to the internet relay...";
     ui_.text(x + 80, y + 6, status, sharing_ ? theme::good : theme::dim, 1.1f);
     if (ui_.clicked({sw.x, sw.y, 80 + ui_.text_width(status, 1.1f), sw.h})) {
         if (sharing_) stop_sharing();
@@ -1252,40 +1311,29 @@ void App::draw_share(float top) {
             yy += 40;
         }
         if (share_needs_input_perm_) {
-            ui_.text(x + 14, yy, "Allow Accessibility so viewers can use the mouse and keyboard.", theme::warn);
+            ui_.text(x + 14, yy, "Allow Accessibility so the helper can use the mouse and keyboard.", theme::warn);
             if (ui_.button({x + cw - 190, yy - 4, 176, 28}, "Open Accessibility"))
                 SDL_OpenURL("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
         }
         y += box.h + 14;
     }
 
-    // Connection details.
-    Rect card{x, y, cw, 152};
+    // The two things to read out: ID and password.
+    Rect card{x, y, cw, 150};
     ui_.fill(card, theme::panel, 12);
     ui_.outline(card, theme::panel_border, 12);
-    float cy = y + 16;
-    const float lx = x + 18, vx = x + 150;
-    auto row = [&](const char *label, const std::string &value, Color c) {
-        ui_.text(lx, cy, label, theme::dim);
-        ui_.text(vx, cy, ellipsize(ui_, value, cw - 170 - 130), c, 1.1f);
-        cy += 34;
-    };
-    std::string addr = "-";
-    if (!share_urls_.empty()) {
-        addr = share_urls_[0].substr(7);  // "ip:port/"
-        if (!addr.empty() && addr.back() == '/') addr.pop_back();
-        size_t colon = addr.rfind(':');
-        if (colon != std::string::npos && addr.substr(colon + 1) == "5980") addr = addr.substr(0, colon);
-    } else if (!sharing_) {
-        addr = "(turn sharing on)";
-    }
-    row("PC address", addr, theme::text);
-    row("Password", share_show_pw_ ? (store_.share_password.empty() ? "(created when you turn sharing on)"
-                                                                     : store_.share_password)
-                                   : std::string(store_.share_password.empty() ? 0 : 11, '*'),
-        theme::text);
-    if (ui_.button({x + cw - 250, cy - 38, 110, 28}, share_show_pw_ ? "Hide" : "Show")) share_show_pw_ = !share_show_pw_;
-    if (ui_.button({x + cw - 130, cy - 38, 112, 28}, "New password")) {
+    const float half = (cw - 36) / 2;
+    ui_.text(x + 18, y + 16, "Your ID", theme::dim);
+    ui_.text(x + 18, y + 40, sharing_ && !share_id_.empty() ? pretty_id(share_id_) : "--- --- ---",
+             share_relay_online_ ? theme::text : theme::dim, 2.0f);
+    ui_.text(x + 18 + half, y + 16, "Password", theme::dim);
+    std::string pw = store_.share_password.empty() ? "(appears when on)"
+                     : share_show_pw_ || qs        ? store_.share_password
+                                                   : std::string(11, '*');
+    ui_.text(x + 18 + half, y + 40, pw, theme::text, qs ? 2.0f : 1.6f);
+    if (!qs && ui_.button({x + 18 + half, y + 104, 80, 28}, share_show_pw_ ? "Hide" : "Show"))
+        share_show_pw_ = !share_show_pw_;
+    if (ui_.button({x + 18 + half + (qs ? 0 : 88), y + 104, 124, 28}, "New password")) {
         store_.share_password = random_share_password();
         store_.save();
         share_show_pw_ = true;
@@ -1294,27 +1342,43 @@ void App::draw_share(float top) {
             start_sharing();
         }
     }
-    row("Identity", share_identity_.empty() ? "-" : share_identity_, theme::good);
-    row("Web browser", share_urls_.empty() ? "-" : share_urls_[0], theme::accent_hover);
-    y += card.h + 18;
+    ui_.text(x + 18, y + 110, "Identity " + (share_identity_.empty() ? std::string("-") : share_identity_), theme::dim);
+    y += card.h + 16;
 
-    // Options (take effect the next time sharing starts).
-    bool vo = store_.share_view_only, demo = store_.share_demo;
-    if (ui_.checkbox(x, y, "View only - others can watch but not control", vo) ||
-        ui_.checkbox(x, y + 28, "Share a demo desktop instead of this screen (for testing)", demo)) {
-        store_.share_view_only = vo;
-        store_.share_demo = demo;
-        store_.save();
-        if (sharing_) {
-            stop_sharing();
-            start_sharing();
-        }
+    // How the helper connects.
+    std::string lan = "-";
+    if (!share_urls_.empty()) {
+        lan = share_urls_[0].substr(7);
+        if (!lan.empty() && lan.back() == '/') lan.pop_back();
+        size_t colon = lan.rfind(':');
+        if (colon != std::string::npos && lan.substr(colon + 1) == "5980") lan = lan.substr(0, colon);
     }
-    y += 70;
+    ui_.text(x, y, "The helper can connect with the TetherDesk app, or in any web browser at", theme::dim);
+    y += 22;
+    ui_.text(x, y, "https://" + (share_relay_.empty() ? opts_.relay : share_relay_) + "/", theme::accent_hover, 1.1f);
+    y += 28;
+    ui_.text(x, y, "On the same network they can also use this computer's address: " + lan, theme::dim);
+    y += 36;
+
+    if (!qs) {
+        // Options (take effect the next time sharing starts).
+        bool vo = store_.share_view_only, demo = store_.share_demo;
+        if (ui_.checkbox(x, y, "View only - others can watch but not control", vo) ||
+            ui_.checkbox(x, y + 28, "Share a demo desktop instead of this screen (for testing)", demo)) {
+            store_.share_view_only = vo;
+            store_.share_demo = demo;
+            store_.save();
+            if (sharing_) {
+                stop_sharing();
+                start_sharing();
+            }
+        }
+        y += 70;
+    }
 
     ui_.text(x, y, "Activity", theme::dim);
     y += 24;
-    if (share_activity_.empty()) ui_.text(x, y, sharing_ ? "No connections yet" : "-", theme::dim);
+    if (share_activity_.empty()) ui_.text(x, y, sharing_ ? "Nobody has connected yet" : "-", theme::dim);
     for (auto &a : share_activity_) {
         ui_.text(x, y, ellipsize(ui_, a, cw), theme::text);
         y += 20;
@@ -1340,8 +1404,12 @@ void App::draw_web_connect() {
 
     const float fx = card.x + 28, fw = card.w - 56;
     const bool busy = phase_ != Phase::None || reconnect_at_;
-    form_field({fx, y, fw * 0.68f, 36}, "Host", f_host_);
-    form_field({fx + fw * 0.72f, y, fw * 0.28f, 36}, "Port", f_port_, false, true);
+    if (opts_.web_relay) {
+        form_field({fx, y, fw, 36}, "Computer ID (shown on the computer you're helping)", f_host_);
+    } else {
+        form_field({fx, y, fw * 0.68f, 36}, "Computer ID or host", f_host_);
+        form_field({fx + fw * 0.72f, y, fw * 0.28f, 36}, "Port", f_port_, false, true);
+    }
     form_field({fx, y + 64, fw, 36}, "Your name", f_name_);
     form_field({fx, y + 128, fw, 36}, "Password", f_password_, true);
     y += 184;
@@ -1390,7 +1458,7 @@ void App::draw_dialog() {
         float y = c.y + 18;
         form_field({c.x, y, c.w, 36}, "Display name (optional)", edit_.label);
         y += 62;
-        form_field({c.x, y, c.w * 0.7f, 36}, "PC address", edit_.host);
+        form_field({c.x, y, c.w * 0.7f, 36}, "Computer ID or address", edit_.host);
         form_field({c.x + c.w * 0.74f, y, c.w * 0.26f, 36}, "Port", edit_port_, false, true);
         edit_.port = std::atoi(edit_port_.c_str());
         y += 62;
@@ -1421,7 +1489,7 @@ void App::draw_dialog() {
     }
     case Dialog::Password: {
         Rect c = dialog_frame(440, 300, "Connect to " + (target_.label.empty() ? target_.host : target_.label));
-        ui_.text(c.x, c.y - 8, target_.host + ":" + std::to_string(target_.port), theme::dim);
+        ui_.text(c.x, c.y - 8, display_address(target_.host, target_.port), theme::dim);
         float y = c.y + 38;
         form_field({c.x, y, c.w, 36}, "Password", pw_input_, true);
         y += 50;

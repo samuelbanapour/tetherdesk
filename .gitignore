@@ -5,3 +5,4 @@ build-web/
 *.bmp
 dist/
 build-release/
+relay/public/

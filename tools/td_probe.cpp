@@ -72,7 +72,7 @@ uint16_t ascii_to_hid(char c, bool &shift) {
 }  // namespace
 
 int main(int argc, char **argv) {
-    std::string host = "localhost", password, snapshot, type_text, send_file;
+    std::string host = "localhost", password, snapshot, type_text, send_file, relay, relay_id;
     int port = RD_DEFAULT_PORT, quality = 255;
     double seconds = 3;
     bool expect_fail = false, copy = false;
@@ -81,6 +81,8 @@ int main(int argc, char **argv) {
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
         if (a == "--password") password = next();
         else if (a == "--port") port = std::atoi(next().c_str());
+        else if (a == "--relay") relay = next();
+        else if (a == "--id") relay_id = next();
         else if (a == "--seconds") seconds = std::atof(next().c_str());
         else if (a == "--snapshot") snapshot = next();
         else if (a == "--type") type_text = next();
@@ -100,7 +102,14 @@ int main(int argc, char **argv) {
     }
 
     auto t = td::Transport::create();
-    t->connect(host, port);
+    if (!relay_id.empty()) {  // through an internet relay, by ID
+        size_t c = relay.rfind(':');
+        std::string rh = relay.empty() ? "tetherdesk-relay.fly.dev" : relay.substr(0, c);
+        int rp = (relay.empty() || c == std::string::npos) ? 80 : std::atoi(relay.substr(c + 1).c_str());
+        t->connect(rh, rp, "/v/" + relay_id);
+    } else {
+        t->connect(host, port);
+    }
     rd_channel ch{};
     rd_buf sealed;
     rd_buf_init(&sealed);

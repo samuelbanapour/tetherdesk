@@ -36,6 +36,12 @@ struct Options {
     bool trust_new_hosts = false;   // skip the first-connection fingerprint prompt
     bool start_sharing = false;     // open "Share this PC" and turn sharing on
     bool share_demo = false;        // ...sharing the demo desktop (not saved)
+    bool quick_support = false;     // minimal "get help" mode: just the Share screen
+    std::string relay = "tetherdesk-relay.fly.dev";  // for connecting by ID (native)
+    // Web builds: where the page came from.
+    bool web_secure = false, web_relay = false;
+    std::string web_host, connect_id;
+    int web_port = 80;
     std::string screenshot_path;    // save the rendered window, then quit
     double screenshot_after = 3.0;  // seconds after start
 };
@@ -170,7 +176,8 @@ private:
     HostProcess host_;
 #endif
     bool sharing_ = false;
-    std::string share_log_path_, share_identity_, share_error_;
+    std::string share_log_path_, share_identity_, share_error_, share_id_, share_relay_;
+    bool share_relay_online_ = false;
     std::vector<std::string> share_urls_, share_activity_;
     bool share_needs_screen_perm_ = false, share_needs_input_perm_ = false;
     bool share_show_pw_ = false;

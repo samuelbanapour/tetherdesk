@@ -154,7 +154,7 @@ int Server::run() {
         const size_t n_conns = conns_.size();
         for (auto &c : conns_) {
             short ev = POLLIN;
-            if (c->pending()) ev |= POLLOUT;
+            if (c->pending() || c->tcp_pending) ev |= POLLOUT;
             fds.push_back({c->sock, ev, 0});
             any_active |= c->state == State::Active;
         }
@@ -180,6 +180,18 @@ int Server::run() {
         for (size_t i = 0; i < n_conns; i++) {
             Conn &c = *conns_[i];
             short re = fds[first_conn + i].revents;
+            if (c.tcp_pending) {
+                if (re & (POLLOUT | POLLERR | POLLHUP)) {
+                    int e = rd_net_connect_result(c.sock);
+                    if (e != 0) {
+                        close_conn(c, "relay unreachable");
+                        continue;
+                    }
+                    c.tcp_pending = false;
+                    flush(c);
+                }
+                continue;
+            }
             if (re & (POLLIN | POLLHUP | POLLERR)) read_conn(c);
             if ((re & POLLOUT) && !c.dead) flush(c);
         }
@@ -188,6 +200,14 @@ int Server::run() {
         const uint64_t now = rd_now_us();
         for (auto &c : conns_) {
             if (c->dead) continue;
+            if (c->state == State::RelayCtl) {
+                if (now - c->last_rx_us > 70 * kSecond) close_conn(*c, "relay went quiet");
+                else if (now - c->last_ping_us > 25 * kSecond) {
+                    c->last_ping_us = now;
+                    ws_frame(*c, RD_WS_PING, "td", 2);
+                }
+                continue;
+            }
             bool authed = c->state == State::Active;
             if (!authed && now - c->created_us > 120 * kSecond) close_conn(*c, "handshake timeout");
             else if (authed && now - c->last_rx_us > 45 * kSecond) close_conn(*c, "timed out");
@@ -207,6 +227,13 @@ int Server::run() {
                 std::remove(u.second.path.c_str());
             }
             if (c->sent_input) plat_.input->release_all();
+            if (c.get() == relay_ctl_) {
+                relay_ctl_ = nullptr;
+                if (relay_online_) log("relay connection lost - reconnecting");
+                relay_online_ = false;
+                relay_next_us_ = rd_now_us() + relay_backoff_us_;
+                relay_backoff_us_ = std::min<uint64_t>(relay_backoff_us_ * 2, 30 * kSecond);
+            }
             if (c->state == State::Active || c->state == State::Closing) {
                 if (!c->name.empty()) left.push_back(c->name);
             }
@@ -217,6 +244,7 @@ int Server::run() {
             broadcast_viewers();
             for (auto &n : left) notice(n + " disconnected");
         }
+        maintain_relay();
     }
 
     log("shutting down");
@@ -241,6 +269,88 @@ void Server::accept_new() {
     }
 }
 
+// ------------------------------------------------------------ relay client
+
+void Server::maintain_relay() {
+    if (cfg_.relay_host.empty() || relay_ctl_ || rd_now_us() < relay_next_us_) return;
+    open_relay_conn(true, "", "");
+}
+
+void Server::open_relay_conn(bool control, const std::string &ticket, const std::string &viewer_ip) {
+    char err[256];
+    rd_socket s = rd_net_connect_start(cfg_.relay_host.c_str(), cfg_.relay_port, 0, err, sizeof err);
+    if (s == RD_INVALID_SOCKET) {
+        if (control) {
+            relay_next_us_ = rd_now_us() + relay_backoff_us_;
+            relay_backoff_us_ = std::min<uint64_t>(relay_backoff_us_ * 2, 30 * kSecond);
+        }
+        return;
+    }
+    auto c = std::make_unique<Conn>();
+    c->sock = s;
+    c->addr = control ? "relay" : (viewer_ip.empty() ? "relay" : viewer_ip) + " (via relay)";
+    c->created_us = c->last_rx_us = c->last_ping_us = rd_now_us();
+    c->client_ws = true;
+    c->relay_ctl = control;
+    c->tcp_pending = true;
+    c->state = State::RelayUpgrade;
+    c->ws.expect_masked = 0;
+    c->ws.max_message = RD_MAX_CLIENT_MSG;
+
+    uint8_t raw[16];
+    rd_random(raw, sizeof raw);
+    char key[32];
+    rd_base64(raw, sizeof raw, key);
+    rd_ws_accept_key(key, c->ws_accept);
+    std::string path = control ? "/host?id=" + cfg_.relay_id + "&key=" + cfg_.relay_key
+                               : "/data?id=" + cfg_.relay_id + "&key=" + cfg_.relay_key + "&ticket=" + ticket;
+    std::string req = "GET " + path + " HTTP/1.1\r\nHost: " + cfg_.relay_host +
+                      "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key +
+                      "\r\nSec-WebSocket-Version: 13\r\nUser-Agent: TetherDesk-Host\r\n\r\n";
+    rd_buf_put(&c->out, req.data(), req.size());
+    if (control) relay_ctl_ = c.get();
+    conns_.push_back(std::move(c));
+}
+
+void Server::finish_relay_upgrade(Conn &c) {
+    const char *base = reinterpret_cast<const char *>(c.in.data);
+    size_t end = 0;
+    for (size_t i = 0; i + 3 < c.in.len; i++)
+        if (!std::memcmp(c.in.data + i, "\r\n\r\n", 4)) {
+            end = i;
+            break;
+        }
+    if (!end) {
+        if (c.in.len > 16384) close_conn(c, "bad relay response");
+        return;
+    }
+    std::string resp(base, end + 2);
+    rd_buf_consume(&c.in, end + 4);
+    char accept[64] = "";
+    if (resp.compare(0, 12, "HTTP/1.1 101") != 0 ||
+        !rd_http_header(resp.substr(resp.find("\r\n") + 2).c_str(), "Sec-WebSocket-Accept", accept, sizeof accept) ||
+        std::strcmp(accept, c.ws_accept) != 0) {
+        if (c.relay_ctl && resp.compare(9, 3, "409") == 0)
+            log("relay: ID %s is in use by another computer", cfg_.relay_id.c_str());
+        close_conn(c, "relay refused");
+        return;
+    }
+    if (c.relay_ctl) {
+        c.state = State::RelayCtl;
+        relay_online_ = true;
+        relay_backoff_us_ = 2 * kSecond;
+        log("relay: online as %s (%s) - connect from anywhere with this ID", cfg_.relay_id.c_str(),
+            cfg_.relay_host.c_str());
+    } else {
+        c.state = State::Hello;
+    }
+    if (c.in.len) handle_ws_messages(c);
+}
+
+void Server::ws_frame(Conn &c, int opcode, const void *p, size_t n) {
+    if (!c.dead) rd_ws_write_frame(&c.out, opcode, p, n, c.client_ws ? 1 : 0);
+}
+
 void Server::read_conn(Conn &c) {
     uint8_t buf[65536];
     size_t total = 0;
@@ -257,10 +367,12 @@ void Server::read_conn(Conn &c) {
     if (!total) return;
     c.last_rx_us = rd_now_us();
     if (c.state == State::Http) handle_http(c);
+    else if (c.state == State::RelayUpgrade) finish_relay_upgrade(c);
     else handle_ws_messages(c);
 }
 
 void Server::flush(Conn &c) {
+    if (c.tcp_pending) return;
     while (c.pending()) {
         long n = rd_net_send(c.sock, c.out.data + c.out_off, c.pending());
         if (n < 0) {
@@ -379,7 +491,15 @@ void Server::serve_file(Conn &c, std::string path) {
 void Server::send_msg(Conn &c, const rd_buf &msg) {
     if (c.dead) return;
     if (!c.ch.active) {
-        rd_ws_write_frame(&c.out, RD_WS_BINARY, msg.data, msg.len, 0);
+        ws_frame(c, RD_WS_BINARY, msg.data, msg.len);
+        return;
+    }
+    if (c.client_ws) {  // relay link: frames must be masked, so seal separately
+        rd_buf sealed;
+        rd_buf_init(&sealed);
+        rd_channel_seal(&c.ch, msg.data, msg.len, &sealed);
+        ws_frame(c, RD_WS_BINARY, sealed.data, sealed.len);
+        rd_buf_free(&sealed);
         return;
     }
     // Seal straight into the send queue behind the WebSocket header.
@@ -399,14 +519,25 @@ void Server::handle_ws_messages(Conn &c) {
     while (!c.dead && c.state != State::Closing && (rc = rd_ws_next(&c.ws, &c.in, &m)) == 1) {
         switch (m.opcode) {
         case RD_WS_BINARY: handle_message(c, m.data, m.len); break;
-        case RD_WS_PING: rd_ws_write_frame(&c.out, RD_WS_PONG, m.data, m.len, 0); break;
+        case RD_WS_PING: ws_frame(c, RD_WS_PONG, m.data, m.len); break;
         case RD_WS_CLOSE:
-            rd_ws_write_frame(&c.out, RD_WS_CLOSE, m.data, std::min<size_t>(m.len, 2), 0);
+            ws_frame(c, RD_WS_CLOSE, m.data, std::min<size_t>(m.len, 2));
             if (c.state == State::Active) log("%s left", c.name.c_str());
             c.state = State::Closing;
             c.close_after_flush = true;
             return;
-        default: break;  // text / pong: ignored
+        case RD_WS_TEXT:
+            // Relay control: "open TICKET VIEWER_IP" = a viewer wants in.
+            if (c.state == State::RelayCtl && m.len > 5 && m.len < 256 && !std::memcmp(m.data, "open ", 5)) {
+                std::string cmd(reinterpret_cast<const char *>(m.data) + 5, m.len - 5);
+                size_t sp = cmd.find(' ');
+                std::string ticket = cmd.substr(0, sp), ip = sp == std::string::npos ? "" : cmd.substr(sp + 1);
+                int relayed = 0;
+                for (auto &o : conns_) relayed += o->client_ws && !o->relay_ctl && !o->dead;
+                if (relayed < cfg_.max_viewers * 2) open_relay_conn(false, ticket, ip);
+            }
+            break;
+        default: break;  // pong: ignored
         }
     }
     if (rc < 0) close_conn(c, "websocket protocol error");

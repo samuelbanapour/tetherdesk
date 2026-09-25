@@ -22,7 +22,8 @@ tetherdesk/
               store.cpp            saved PCs, pinned host identities, thumbnails
               transport_native.cpp  TCP + our own WebSocket client
               transport_web.cpp     browser WebSocket via Emscripten
-  tools/    tetherdesk-probe (headless test client), gen_font.py (build-time only)
+  relay/    internet relay server (C++), Dockerfile + fly.toml, QuickSupport download page
+  tools/    tetherdesk-probe (headless test client), gen_font.py / gen_icon.py (build-time only)
   tests/    codec / crypto / WebSocket self-tests
 ```
 
@@ -68,27 +69,25 @@ build/TetherDesk.app/Contents/MacOS/TetherDesk 192.168.1.20 --password abcde-fgh
 Prebuilt Windows, Linux and macOS zips are attached to each
 [GitHub release](../../releases) (built by `.github/workflows/build.yml`).
 
-### Controlling another computer
+### Helping someone: nothing to install, no VPN
 
-1. On the computer you want to control, download the zip for its OS and run
-   `tetherdesk-host` (Windows: `tetherdesk-host.exe`). It prints a password
-   and an **Identity** fingerprint.
-2. On your computer, open `tetherdesk`, type the other computer's address into
-   **Quick connect**, and enter the password.
-3. The first time, TetherDesk shows the host's identity. Check that it matches
-   what the host printed, then choose **Trust and connect**. After that, the
-   PC is saved on the home screen with a preview.
+1. Send them **https://tetherdesk-relay.fly.dev/get**. They download **TetherDesk QuickSupport**:
+   - on Windows, a single `.exe`;
+   - on a Mac, a zip containing the app.
+2. They run it. There's no installer, and closing it ends the session. It shows an **ID** (like `728 857 467`) and a **password**.
+3. You connect in one of two ways:
+   - open **https://tetherdesk-relay.fly.dev/** in any browser and enter the ID and password, or
+   - type the ID into TetherDesk's **Quick connect**.
 
-In a browser, go to `http://<host>:5980/`. To connect automatically, add the password and your name to the URL: `http://<host>:5980/#password=...&name=Sam`.
+This works across the internet with no port forwarding or VPN. Both computers make *outgoing* connections to the relay (`relay/`), which pairs them by ID.
 
-On macOS, the host needs two permissions in System Settings > Privacy & Security:
+The session stays end-to-end encrypted between the two computers, so the relay only ever forwards ciphertext. It can't see the screen or keystrokes, and it can't learn the password.
 
-- **Screen Recording**, so it can capture the screen.
-- **Accessibility**, so it can control the mouse and keyboard.
+To run your own relay, use `relay/deploy.sh` (Fly.io). Then point hosts and viewers at it with `--relay your.host`.
 
-The `--demo` mode needs neither.
+### Controlling your own computers
 
-Host options: `--port`, `--bind`, `--password`, `--view-only`, `--no-files`, `--fps`, `--display`, `--max-viewers`, `--native-res` (full Retina resolution), `--threads`. While the host is running, you can type `/help` in its terminal for commands: `/list`, `/kick`, `/viewonly`, `/password`, chat.
+In the app, turn on **Share this PC** on the computer you want to reach. Note its ID, and connect to it from anywhere by that ID. On the same network, its local address works too.
 
 ## Features
 

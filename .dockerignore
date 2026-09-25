@@ -1,0 +1,6 @@
+build
+build-web
+build-release
+dist
+.git
+**/._*

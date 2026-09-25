@@ -26,7 +26,7 @@ public:
         rd_ws_reader_free(&ws_);
     }
 
-    void connect(const std::string &host, int port) override {
+    void connect(const std::string &host, int port, const std::string &path, bool) override {
         close();
         rd_buf_clear(&in_);
         rd_buf_clear(&out_);
@@ -35,6 +35,7 @@ public:
         error_.clear();
         host_ = host;
         port_ = port;
+        path_ = path;
         attempt_ = 0;
         if (!open_socket()) return;
         state_ = State::Connecting;
@@ -46,7 +47,7 @@ public:
         rd_base64(raw, sizeof raw, key);
         rd_ws_accept_key(key, expected_accept_);
         std::string h = host.find(':') != std::string::npos ? "[" + host + "]" : host;
-        std::string req = "GET /ws HTTP/1.1\r\nHost: " + h + ":" + std::to_string(port) +
+        std::string req = "GET " + path + " HTTP/1.1\r\nHost: " + h + (port == 80 ? "" : ":" + std::to_string(port)) +
                           "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key +
                           "\r\nSec-WebSocket-Version: 13\r\nUser-Agent: TetherDesk\r\n\r\n";
         rd_buf_put(&out_, req.data(), req.size());
@@ -102,7 +103,10 @@ public:
         while ((rc = rd_ws_next(&ws_, &in_, &m)) == 1) {
             if (m.opcode == RD_WS_BINARY) out.emplace_back(m.data, m.data + m.len);
             else if (m.opcode == RD_WS_PING) rd_ws_write_frame(&out_, RD_WS_PONG, m.data, m.len, 1);
-            else if (m.opcode == RD_WS_CLOSE) return fail("the host closed the connection");
+            else if (m.opcode == RD_WS_CLOSE) {
+                int code = m.len >= 2 ? (m.data[0] << 8 | m.data[1]) : 1000;
+                return fail(close_reason(code));
+            }
         }
         if (rc < 0) return fail("protocol error from host");
         if (peer_closed) return fail("the host closed the connection");
@@ -123,6 +127,13 @@ public:
         }
         sock_ = RD_INVALID_SOCKET;
         if (state_ != State::Idle) state_ = State::Closed;
+    }
+
+public:
+    static std::string close_reason(int code) {
+        if (code == 4404) return "That computer isn't online right now. Ask them to open TetherDesk and turn on sharing.";
+        if (code == 4408) return "That computer didn't answer - try again in a moment.";
+        return "the host closed the connection";
     }
 
 private:
@@ -204,7 +215,7 @@ private:
     }
 
     rd_socket sock_ = RD_INVALID_SOCKET;
-    std::string host_;
+    std::string host_, path_;
     int port_ = 0, attempt_ = 0;
     State state_ = State::Idle;
     bool tcp_up_ = false;

@@ -20,6 +20,12 @@ extern char **environ;
 namespace td {
 
 std::string executable_dir() {
+    std::string p = executable_path();
+    size_t slash = p.find_last_of("/\\");
+    return slash == std::string::npos ? "." : p.substr(0, slash);
+}
+
+std::string executable_path() {
     std::string p;
 #ifdef _WIN32
     wchar_t buf[MAX_PATH * 2];
@@ -36,8 +42,7 @@ std::string executable_dir() {
     ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
     if (n > 0) p.assign(buf, size_t(n));
 #endif
-    size_t slash = p.find_last_of("/\\");
-    return slash == std::string::npos ? "." : p.substr(0, slash);
+    return p;
 }
 
 #ifdef _WIN32

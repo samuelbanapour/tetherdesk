@@ -20,7 +20,8 @@
   // address of the host that served the page (plus any #password=&name= hash).
   var Module = {
     canvas: document.getElementById('canvas'),
-    arguments: [location.hostname, location.port || (location.protocol === 'https:' ? '443' : '80'), location.hash],
+    arguments: [location.hostname, location.port || (location.protocol === 'https:' ? '443' : '80'), location.hash,
+                location.protocol],
     onRuntimeInitialized: function () { document.getElementById('status').remove(); Module.canvas.focus(); },
     print: function (t) { console.log(t); },
     printErr: function (t) { console.warn(t); }

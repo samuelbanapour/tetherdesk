@@ -55,13 +55,31 @@ jobs:
         run: |
           bin=build; [ "$RUNNER_OS" = "Windows" ] && bin=build/Release
           ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
-          "$bin/tetherdesk-host$ext" --demo --password ci-password-1 --no-console \
+          "$bin/tetherdesk-host$ext" --demo --password ci-password-1 --no-console --no-relay \
               --key-file "$RUNNER_TEMP/host_key" --downloads "$RUNNER_TEMP/dl" > host.log 2>&1 &
           trap 'echo "--- host log ---"; cat host.log' EXIT
           sleep 3
           "$bin/tetherdesk-probe$ext" localhost --password wrong-password --expect-fail
           "$bin/tetherdesk-probe$ext" localhost --password ci-password-1 --seconds 3 --quality 0 \
               --type "CI says hello" --copy
+
+      - name: End-to-end test through the relay (connect by ID)
+        shell: bash
+        run: |
+          bin=build; [ "$RUNNER_OS" = "Windows" ] && bin=build/Release
+          ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
+          mkdir -p "$RUNNER_TEMP/relaycfg"
+          "$bin/tetherdesk-relay$ext" --port 8089 > relay.log 2>&1 &
+          sleep 1
+          "$bin/tetherdesk-host$ext" --demo --password ci-password-2 --no-console --port 5993 \
+              --relay localhost:8089 --key-file "$RUNNER_TEMP/relaycfg/host_key" > host2.log 2>&1 &
+          trap 'echo "--- relay log ---"; cat relay.log; echo "--- host log ---"; cat host2.log' EXIT
+          sleep 4
+          id=$(cut -d' ' -f1 "$RUNNER_TEMP/relaycfg/relay_id")
+          echo "host ID: $id"
+          "$bin/tetherdesk-probe$ext" --relay localhost:8089 --id 999999999 --password x --expect-fail
+          "$bin/tetherdesk-probe$ext" --relay localhost:8089 --id "$id" --password ci-password-2 --seconds 3 \
+              --type "Hello via relay"
 
       - uses: mymindstorm/setup-emsdk@v14
         with:
@@ -78,7 +96,7 @@ jobs:
         shell: bash
         run: |
           bash ./packaging/macos/make_dmg.sh "${GITHUB_REF_NAME#v}"
-          echo "ASSET=$(ls dist/*.dmg)" >> "$GITHUB_ENV"
+          echo "ASSET=dist/*" >> "$GITHUB_ENV"
 
       - name: Package (Windows installer)
         if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
@@ -87,12 +105,15 @@ jobs:
           stage="$RUNNER_TEMP/stage"
           mkdir -p "$stage/web"
           cp build/Release/TetherDesk.exe build/Release/tetherdesk-host.exe build/Release/tetherdesk-probe.exe README.md "$stage/"
+          mkdir -p dist
+          # QuickSupport: one self-contained .exe that opens straight into sharing.
+          cp build/Release/TetherDesk.exe dist/TetherDesk-QuickSupport.exe
           cp build-web/index.html build-web/index.js build-web/index.wasm "$stage/web/"
           iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
           if [ ! -f "$iscc" ]; then choco install innosetup -y --no-progress; fi
           "$iscc" -Q "-DAppVersion=${GITHUB_REF_NAME#v}" "-DStageDir=$(cygpath -w "$stage")" \
               "-O$(cygpath -w "$PWD/dist")" packaging/windows/tetherdesk.iss
-          echo "ASSET=$(ls dist/*.exe)" >> "$GITHUB_ENV"
+          echo "ASSET=dist/*" >> "$GITHUB_ENV"
 
       - name: Package (Linux .zip)
         if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Linux'
@@ -118,4 +139,9 @@ jobs:
               publisher - choose **More info > Run anyway**.
             - Linux (x64, X11): `TetherDesk-*-linux-x64.zip` (needs libsdl2, libx11, libxtst).
 
-            Use **Connect to a PC** to control another computer, or **Share this PC** to let someone connect to yours.
+            - **QuickSupport** (`TetherDesk-QuickSupport.exe` / `-macOS.zip`): nothing to install - the person
+              who needs help runs it and reads out the ID and password.
+
+            Use **Connect to a PC** (an ID works from anywhere, via the relay) to control another computer, or
+            **Share this PC** to let someone connect to yours. Helpers can also connect from any browser at
+            https://tetherdesk-relay.fly.dev/

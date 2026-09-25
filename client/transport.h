@@ -19,7 +19,10 @@ public:
     enum class State { Idle, Connecting, Open, Closed };
 
     virtual ~Transport() = default;
-    virtual void connect(const std::string &host, int port) = 0;
+    // path: "/ws" for a host directly, "/v/<ID>" through a relay.
+    // secure: use TLS (wss://) - web builds only; native relay links use
+    // plain ws (the session is end-to-end encrypted either way).
+    virtual void connect(const std::string &host, int port, const std::string &path = "/ws", bool secure = false) = 0;
     virtual void send(const uint8_t *data, size_t len) = 0;
     // Moves any received messages into `out` (appending). Never blocks.
     virtual void poll(std::vector<std::vector<uint8_t>> &out) = 0;
