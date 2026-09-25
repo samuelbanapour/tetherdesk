@@ -162,6 +162,29 @@ bool Ui::button(const Rect &r, const std::string &label, bool active, bool enabl
     return hit;
 }
 
+bool Ui::checkbox(float x, float y, const std::string &label, bool &value) {
+    Rect hit{x, y, 24 + text_width(label), 22};
+    Rect box{x, y + 2, 18, 18};
+    bool hover = mouse_over(hit);
+    fill(box, value ? theme::accent : theme::field, 4);
+    outline(box, value ? theme::accent : (hover ? theme::dim : theme::panel_border), 4);
+    if (value) {  // check mark
+        SDL_SetRenderDrawColor(r_, 255, 255, 255, 255);
+        const float s = scale_;
+        for (float o = -0.6f; o <= 0.6f; o += 0.6f) {
+            SDL_RenderDrawLineF(r_, (box.x + 4) * s, (box.y + 9 + o) * s, (box.x + 8) * s, (box.y + 13 + o) * s);
+            SDL_RenderDrawLineF(r_, (box.x + 8) * s, (box.y + 13 + o) * s, (box.x + 14) * s, (box.y + 5 + o) * s);
+        }
+    }
+    text(x + 26, y + 2, label, theme::text);
+    if (clicked(hit)) {
+        consumed_ = true;
+        value = !value;
+        return true;
+    }
+    return false;
+}
+
 void Ui::field(const Rect &r, const std::string &label, const std::string &value, bool focused, bool secret) {
     text(r.x, r.y - line_height() - 4, label, theme::dim);
     fill(r, theme::field, 6);

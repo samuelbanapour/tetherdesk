@@ -21,6 +21,7 @@
 #include "rd_crypto.h"
 #include "rd_net.h"
 #include "rd_proto.h"
+#include "rd_secure.h"
 
 namespace {
 
@@ -98,10 +99,22 @@ int main(int argc, char **argv) {
 
     auto t = td::Transport::create();
     t->connect(host, port);
+    rd_channel ch{};
+    rd_buf sealed;
+    rd_buf_init(&sealed);
     auto send = [&](rd_buf &b) {
-        t->send(b.data, b.len);
+        if (ch.active) {
+            rd_buf_clear(&sealed);
+            rd_channel_seal(&ch, b.data, b.len, &sealed);
+            t->send(sealed.data, sealed.len);
+        } else {
+            t->send(b.data, b.len);
+        }
         rd_buf_clear(&b);
     };
+    uint8_t ce_priv[32], ce[32];
+    rd_x25519_keypair(ce_priv, ce);
+    std::vector<uint8_t> plain;
     rd_buf out;
     rd_buf_init(&out);
 
@@ -129,10 +142,21 @@ int main(int argc, char **argv) {
             rd_buf_put_u8(&out, RD_C_HELLO);
             rd_buf_put_u16(&out, RD_PROTO_VERSION);
             rd_buf_put_str(&out, "probe");
+            rd_buf_put(&out, ce, 32);
             send(out);
             phase = HELLO;
         }
         for (auto &m : msgs) {
+            if (ch.active) {
+                plain.resize(m.size());
+                long pl = rd_channel_open(&ch, m.data(), m.size(), plain.data());
+                if (pl < 0) {
+                    std::fprintf(stderr, "decryption failed\n");
+                    return 1;
+                }
+                plain.resize(size_t(pl));
+                m.swap(plain);
+            }
             rd_reader r;
             rd_reader_init(&r, m.data(), m.size());
             uint8_t type = rd_get_u8(&r);
@@ -140,8 +164,21 @@ int main(int argc, char **argv) {
                 rd_get_u16(&r);
                 rd_get_u8(&r);
                 const uint8_t *nonce = rd_get_bytes(&r, RD_NONCE_LEN);
-                uint8_t mac[32];
-                rd_hmac_sha256(password.data(), password.size(), nonce, RD_NONCE_LEN, mac);
+                char skip[256];
+                rd_get_str(&r, skip, sizeof skip);
+                rd_get_str(&r, skip, sizeof skip);
+                const uint8_t *ss = rd_get_bytes(&r, 32), *se = rd_get_bytes(&r, 32);
+                uint8_t th[32], dh1[32], dh2[32], mac[32];
+                if (r.err || rd_x25519(dh1, ce_priv, se) || rd_x25519(dh2, ce_priv, ss)) {
+                    std::fprintf(stderr, "bad host hello\n");
+                    return 1;
+                }
+                char fp[40];
+                rd_fingerprint(ss, fp);
+                std::printf("host identity: %s\n", fp);
+                rd_hs_transcript(th, ce, ss, se, nonce);
+                rd_hs_keys(&ch, dh1, dh2, th, 0);
+                rd_hs_auth_mac(mac, password.data(), password.size(), th);
                 rd_buf_put_u8(&out, RD_C_AUTH);
                 rd_buf_put(&out, mac, 32);
                 send(out);

@@ -5,6 +5,7 @@
 
 #include "rd_codec.h"
 #include "rd_crypto.h"
+#include "rd_secure.h"
 #include "rd_ws.h"
 
 static int failures = 0;
@@ -153,11 +154,114 @@ static void test_ws(void) {
     rd_buf_free(&in);
 }
 
+
+static void unhex(const char *h, uint8_t *out) {
+    for (size_t i = 0; h[2 * i]; i++) {
+        unsigned v;
+        sscanf(h + 2 * i, "%2x", &v);
+        out[i] = (uint8_t)v;
+    }
+}
+
+static void test_secure(void) {
+    char h[200];
+    uint8_t k[32], u[32], o[32];
+    /* RFC 7748 5.2 */
+    unhex("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4", k);
+    unhex("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c", u);
+    rd_x25519(o, k, u);
+    hex(o, 32, h);
+    CHECK(!strcmp(h, "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552"), "x25519 %s", h);
+    /* RFC 7748 6.1 */
+    uint8_t apriv[32], apub[32], bpriv[32], bpub[32], s1[32], s2[32];
+    unhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", apriv);
+    unhex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb", bpriv);
+    rd_x25519_base(apub, apriv);
+    rd_x25519_base(bpub, bpriv);
+    hex(apub, 32, h);
+    CHECK(!strcmp(h, "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"), "x25519 pub %s", h);
+    rd_x25519(s1, apriv, bpub);
+    rd_x25519(s2, bpriv, apub);
+    hex(s1, 32, h);
+    CHECK(!strcmp(h, "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742") && !memcmp(s1, s2, 32),
+          "x25519 shared %s", h);
+    uint8_t zero[32] = {0};
+    CHECK(rd_x25519(o, apriv, zero) == -1, "low-order point must be rejected");
+
+    /* RFC 8439 2.5.2 Poly1305 */
+    uint8_t pk[32], tag[16];
+    unhex("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b", pk);
+    const char *pm = "Cryptographic Forum Research Group";
+    rd_poly1305(tag, (const uint8_t *)pm, strlen(pm), pk);
+    hex(tag, 16, h);
+    CHECK(!strcmp(h, "a8061dc1305136c6c22b8baf0c0127a9"), "poly1305 %s", h);
+
+    /* RFC 8439 2.8.2 AEAD */
+    const char *pt = "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, "
+                     "sunscreen would be it.";
+    uint8_t key[32], nonce[12], aad[12], ct[200], back[200];
+    unhex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f", key);
+    unhex("070000004041424344454647", nonce);
+    unhex("50515253c0c1c2c3c4c5c6c7", aad);
+    size_t n = strlen(pt);
+    rd_aead_seal(ct, (const uint8_t *)pt, n, aad, 12, key, nonce);
+    hex(ct, 16, h);
+    CHECK(!strcmp(h, "d31a8d34648e60db7b86afbc53ef7ec2"), "aead ct %s", h);
+    hex(ct + n, 16, h);
+    CHECK(!strcmp(h, "1ae10b594f09e26a7e902ecbd0600691"), "aead tag %s", h);
+    CHECK(rd_aead_open(back, ct, n + 16, aad, 12, key, nonce) == 0 && !memcmp(back, pt, n), "aead open");
+    ct[5] ^= 1;
+    CHECK(rd_aead_open(back, ct, n + 16, aad, 12, key, nonce) == -1, "aead must reject tampering");
+
+    /* RFC 5869 A.1 HKDF */
+    uint8_t ikm[22], salt[13], info[10], okm[42];
+    memset(ikm, 0x0b, sizeof ikm);
+    unhex("000102030405060708090a0b0c", salt);
+    unhex("f0f1f2f3f4f5f6f7f8f9", info);
+    rd_hkdf_sha256(okm, 42, ikm, 22, salt, 13, info, 10);
+    hex(okm, 42, h);
+    CHECK(!strcmp(h, "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"),
+          "hkdf %s", h);
+
+    /* Full handshake + channel round trip, including replay rejection. */
+    uint8_t ce_priv[32], ce[32], ss_priv[32], ss[32], se_priv[32], se[32], hn[16] = {1, 2, 3}, th[32];
+    rd_x25519_keypair(ce_priv, ce);
+    rd_x25519_keypair(ss_priv, ss);
+    rd_x25519_keypair(se_priv, se);
+    rd_hs_transcript(th, ce, ss, se, hn);
+    uint8_t cd1[32], cd2[32], hd1[32], hd2[32];
+    rd_x25519(cd1, ce_priv, se);
+    rd_x25519(cd2, ce_priv, ss);
+    rd_x25519(hd1, se_priv, ce);
+    rd_x25519(hd2, ss_priv, ce);
+    rd_channel cv, ch;
+    rd_hs_keys(&cv, cd1, cd2, th, 0);
+    rd_hs_keys(&ch, hd1, hd2, th, 1);
+    rd_buf wire;
+    rd_buf_init(&wire);
+    for (int i = 0; i < 3; i++) {
+        rd_buf_clear(&wire);
+        char msg[32];
+        snprintf(msg, sizeof msg, "message %d", i);
+        rd_channel_seal(&cv, (const uint8_t *)msg, strlen(msg), &wire);
+        uint8_t plain[64];
+        long pl = rd_channel_open(&ch, wire.data, wire.len, plain);
+        CHECK(pl == (long)strlen(msg) && !memcmp(plain, msg, (size_t)pl), "channel msg %d", i);
+    }
+    uint8_t plain[64];
+    CHECK(rd_channel_open(&ch, wire.data, wire.len, plain) == -1, "replayed message must be rejected");
+    rd_buf_free(&wire);
+    char fp[40];
+    rd_fingerprint(ss, fp);
+    CHECK(strlen(fp) == 39, "fingerprint format %s", fp);
+}
+
 int main(void) {
     test_crypto();
     test_lz();
     test_tiles();
     test_ws();
+    test_secure();
     if (failures) {
         printf("%d FAILURE(S)\n", failures);
         return 1;

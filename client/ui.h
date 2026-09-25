@@ -65,6 +65,8 @@ public:
     void text_centered(const Rect &r, const std::string &s, Color c, float size = 1.0f);
 
     bool button(const Rect &r, const std::string &label, bool active = false, bool enabled = true);
+    // Toggles `value` when clicked. Returns true if it changed.
+    bool checkbox(float x, float y, const std::string &label, bool &value);
     // Draws a single-line text field. Editing is driven by the caller.
     void field(const Rect &r, const std::string &label, const std::string &value, bool focused, bool secret);
 

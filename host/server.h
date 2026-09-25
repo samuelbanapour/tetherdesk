@@ -22,6 +22,7 @@
 #include "platform.h"
 #include "rd_bytes.h"
 #include "rd_net.h"
+#include "rd_secure.h"
 #include "rd_ws.h"
 
 namespace td {
@@ -40,6 +41,8 @@ struct ServerConfig {
     std::string downloads_dir;    // where uploaded files land
     std::string host_name;
     int encoder_threads = 0;      // 0 = auto
+    uint8_t static_priv[32] = {}; // host identity key (X25519)
+    uint8_t static_pub[32] = {};
 };
 
 class Server {
@@ -74,6 +77,9 @@ private:
         uint32_t id = 0;
         std::string name;
         uint8_t nonce[16] = {};
+        uint8_t transcript[32] = {};
+        rd_channel ch{};
+        std::vector<uint8_t> plain;  // decrypt buffer
         bool view_only = false;
         bool sent_input = false;
         int quality_setting = 255;  // 0..3 fixed, 255 = automatic
@@ -156,6 +162,7 @@ private:
         uint64_t until_us = 0;
     };
     std::map<std::string, Failures> failures_;
+    std::vector<uint64_t> recent_failures_;  // all addresses, for a global rate limit
     rd_buf scratch_{};
 };
 

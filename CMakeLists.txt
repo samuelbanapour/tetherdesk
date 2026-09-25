@@ -16,10 +16,18 @@ set(COMMON_SOURCES
   common/rd_codec.c
   common/rd_crypto.c
   common/rd_net.c
+  common/rd_secure.c
   common/rd_ws.c)
 
+option(TD_STATIC_SDL "Link SDL2 statically into the viewer (portable binaries)" OFF)
+
+if(WIN32)
+  add_compile_definitions(_WIN32_WINNT=0x0A00 NOMINMAX WIN32_LEAN_AND_MEAN _USE_MATH_DEFINES
+                          _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
+endif()
+
 if(MSVC)
-  set(TD_WARNINGS /W4)
+  set(TD_WARNINGS /W3)
 else()
   set(TD_WARNINGS -Wall -Wextra)
 endif()
@@ -37,6 +45,7 @@ endif()
 set(CLIENT_SOURCES
   client/main.cpp
   client/app.cpp
+  client/store.cpp
   client/ui.cpp)
 
 if(EMSCRIPTEN)
@@ -72,7 +81,9 @@ if(TARGET SDL2::SDL2 OR TARGET PkgConfig::SDL2)
   if(TARGET SDL2::SDL2main)
     target_link_libraries(tetherdesk PRIVATE SDL2::SDL2main)
   endif()
-  if(TARGET SDL2::SDL2)
+  if(TD_STATIC_SDL AND TARGET SDL2::SDL2-static)
+    target_link_libraries(tetherdesk PRIVATE td_common SDL2::SDL2-static)
+  elseif(TARGET SDL2::SDL2)
     target_link_libraries(tetherdesk PRIVATE td_common SDL2::SDL2)
   else()
     target_link_libraries(tetherdesk PRIVATE td_common PkgConfig::SDL2)

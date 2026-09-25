@@ -7,11 +7,13 @@
  * Integers are little-endian. "str" = u16 length + UTF-8, "blob" = u32
  * length + bytes.
  *
- * Handshake
- *   C->S HELLO        u16 version, str viewer_name
- *   S->C HELLO        u16 version, u8 auth_method(1 = HMAC-SHA256),
- *                     u8[16] nonce, str host_name, str host_os
- *   C->S AUTH         u8[32] HMAC-SHA256(key = password, msg = nonce)
+ * Handshake (see rd_secure.h for the cryptography)
+ *   C->S HELLO        u16 version, str viewer_name, u8[32] viewer_ephemeral_key
+ *   S->C HELLO        u16 version, u8 auth_method(2 = X25519/ChaCha20-Poly1305),
+ *                     u8[16] nonce, str host_name, str host_os,
+ *                     u8[32] host_static_key, u8[32] host_ephemeral_key
+ *   ---- every later message, both directions, is AEAD-encrypted ----
+ *   C->S AUTH         u8[32] HMAC-SHA256(password, "tetherdesk-auth" | transcript)
  *   S->C AUTH_RESULT  u8 ok, u8 view_only, str message
  *   (on success the host follows with DISPLAY_INFO, VIEWERS and a full FRAME)
  *
@@ -46,7 +48,7 @@
 #ifndef RD_PROTO_H
 #define RD_PROTO_H
 
-#define RD_PROTO_VERSION 1
+#define RD_PROTO_VERSION 2
 #define RD_DEFAULT_PORT 5980
 #define RD_NONCE_LEN 16
 #define RD_MAC_LEN 32
@@ -88,7 +90,7 @@ enum {
     RD_S_FILE_RESULT = 73
 };
 
-enum { RD_AUTH_HMAC_SHA256 = 1 };
+enum { RD_AUTH_X25519_CHACHA = 2 };
 
 enum {
     RD_BTN_LEFT = 1,

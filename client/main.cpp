@@ -83,6 +83,7 @@ int main(int argc, char **argv) {
         else if (a == "--fullscreen") opts.fullscreen = true;
         else if (a == "--stats") opts.show_stats = true;
         else if (a == "--menu") opts.open_menu = true;
+        else if (a == "--trust") opts.trust_new_hosts = true;
         else if (a == "--screenshot") opts.screenshot_path = next();
         else if (a == "--after") opts.screenshot_after = std::atof(next().c_str());
         else if (a == "-h" || a == "--help") {

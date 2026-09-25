@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <ctime>
 
 #include "rd_codec.h"
 #include "rd_crypto.h"
@@ -16,9 +17,9 @@ namespace {
 constexpr float kMenuW = 580;
 const char *kQualityNames[] = {"Lossless", "High", "Medium", "Low"};
 
-std::string ellipsize(const Ui &ui, std::string s, float max_w) {
-    if (ui.text_width(s) <= max_w) return s;
-    while (!s.empty() && ui.text_width(s + "...") > max_w) s.pop_back();
+std::string ellipsize(const Ui &ui, std::string s, float max_w, float size = 1.0f) {
+    if (ui.text_width(s, size) <= max_w) return s;
+    while (!s.empty() && ui.text_width(s + "...", size) > max_w) s.pop_back();
     return s + "...";
 }
 
@@ -30,27 +31,62 @@ bool is_web() {
 #endif
 }
 
+std::string relative_time(int64_t t) {
+    if (!t) return "never connected";
+    int64_t d = int64_t(std::time(nullptr)) - t;
+    if (d < 60) return "just now";
+    if (d < 3600) return std::to_string(d / 60) + " min ago";
+    if (d < 86400) return std::to_string(d / 3600) + " h ago";
+    return std::to_string(d / 86400) + " days ago";
+}
+
+void pop_utf8(std::string &s) {
+    if (s.empty()) return;
+    do s.pop_back();
+    while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80);
+}
+
 }  // namespace
 
 App::App(SDL_Window *window, SDL_Renderer *renderer, Options opts)
     : win_(window), ren_(renderer), opts_(std::move(opts)) {
     ui_.init(ren_);
+    rd_buf_init(&sealed_);
+    store_.load();
+    transport_ = Transport::create();
+    show_stats_ = opts_.show_stats;
     f_host_ = opts_.host;
     f_port_ = std::to_string(opts_.port);
     f_name_ = opts_.name;
     f_password_ = opts_.password;
-    focus_ = f_password_.empty() ? 3 : 0;
-    transport_ = Transport::create();
-    show_stats_ = opts_.show_stats;
+    focus_ = (is_web() && f_password_.empty()) ? 3 : 0;
     SDL_StartTextInput();
-    if (opts_.autoconnect && !f_password_.empty()) start_connect();
+
+    if (opts_.autoconnect) {
+        SavedPc pc;
+        pc.label = opts_.host;
+        pc.host = opts_.host;
+        pc.port = opts_.port;
+        pc.user_name = opts_.name;
+        pc.fullscreen = opts_.fullscreen;
+        // Reuse a matching saved PC (keeps its id, thumbnail and settings).
+        for (auto &s : store_.pcs)
+            if (s.host == pc.host && s.port == pc.port) pc = s;
+        if (!opts_.password.empty()) pc.password = opts_.password;
+        if (opts_.fullscreen) pc.fullscreen = true;
+        begin_connect(pc);
+    }
 }
 
 App::~App() {
     if (transport_) transport_->close();
     for (auto &u : uploads_)
         if (u.file) std::fclose(u.file);
+    for (auto &t : thumbs_)
+        if (t.second) SDL_DestroyTexture(t.second);
     if (tex_) SDL_DestroyTexture(tex_);
+    rd_buf_free(&sealed_);
+    rd_wipe(&ch_, sizeof ch_);
     ui_.shutdown();
 }
 
@@ -73,7 +109,8 @@ bool App::tick() {
             rd_buf_init(&msg);
             rd_buf_put_u8(&msg, RD_C_HELLO);
             rd_buf_put_u16(&msg, RD_PROTO_VERSION);
-            rd_buf_put_str(&msg, f_name_.empty() ? "Viewer" : f_name_.c_str());
+            rd_buf_put_str(&msg, target_.user_name.empty() ? "Viewer" : target_.user_name.c_str());
+            rd_buf_put(&msg, ce_, 32);
             send(msg);
             rd_buf_free(&msg);
             phase_ = Phase::Hello;
@@ -99,6 +136,7 @@ bool App::tick() {
             last_clip_check_ = now;
             check_local_clipboard();
         }
+        if (now - last_thumb_ >= 30000) save_thumbnail();
         pump_uploads();
         if (now - stats_t0_ >= 1000) {
             double secs = (now - stats_t0_) / 1000.0;
@@ -116,35 +154,82 @@ bool App::tick() {
 
 // ------------------------------------------------------------ connection
 
-void App::start_connect() {
-    error_.clear();
-    if (f_host_.empty()) {
-        error_ = "Enter the host's address";
+void App::begin_connect(const SavedPc &pc) {
+    target_ = pc;
+    if (target_.user_name.empty()) target_.user_name = opts_.name;
+    if (target_.password.empty()) {
+        pw_input_.clear();
+        pw_remember_ = pc.remember;
+        dialog_error_.clear();
+        dialog_ = Dialog::Password;
+        focus_ = 0;
         return;
     }
-    int port = std::atoi(f_port_.c_str());
-    if (port <= 0 || port > 65535) {
-        error_ = "Port must be 1-65535";
-        return;
-    }
-    user_closed_ = false;
-    phase_ = Phase::Connecting;
-    connect_started_ = SDL_GetTicks();
-    transport_->connect(f_host_, port);
+    start_connect();
 }
 
+void App::start_connect() {
+    error_.clear();
+    dialog_error_.clear();
+    if (target_.host.empty()) return fail_connect("Enter the PC's address");
+    if (target_.port <= 0 || target_.port > 65535) return fail_connect("Port must be 1-65535");
+    user_closed_ = false;
+    phase_ = Phase::Connecting;
+    rd_wipe(&ch_, sizeof ch_);
+    rd_x25519_keypair(ce_priv_, ce_);
+    if (screen_ != Screen::Session) dialog_ = Dialog::Connecting;
+    transport_->connect(target_.host, target_.port);
+}
+
+void App::send_auth() {
+    uint8_t mac[32];
+    rd_hs_auth_mac(mac, target_.password.data(), target_.password.size(), transcript_);
+    rd_buf msg;
+    rd_buf_init(&msg);
+    rd_buf_put_u8(&msg, RD_C_AUTH);
+    rd_buf_put(&msg, mac, sizeof mac);
+    send(msg);
+    rd_buf_free(&msg);
+    rd_wipe(mac, sizeof mac);
+    phase_ = Phase::Auth;
+    if (dialog_ == Dialog::Verify) dialog_ = screen_ == Screen::Session ? Dialog::None : Dialog::Connecting;
+}
+
+void App::fail_connect(const std::string &why) {
+    phase_ = Phase::None;
+    user_closed_ = true;
+    transport_->close();
+    if (is_web()) {
+        error_ = why;
+        dialog_ = Dialog::None;
+    } else {
+        dialog_error_ = why;
+        dialog_ = Dialog::Connecting;
+    }
+}
+
+void App::set_fullscreen(bool on) {
+    if (is_web()) return;
+    SDL_SetWindowFullscreen(win_, on ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+}
+
+bool App::fullscreen() const { return SDL_GetWindowFlags(win_) & SDL_WINDOW_FULLSCREEN_DESKTOP; }
+
 void App::disconnect_user() {
+    if (phase_ == Phase::Live) save_thumbnail();
     user_closed_ = true;
     release_input();
     transport_->close();
     phase_ = Phase::None;
     reconnect_at_ = 0;
     reconnect_attempts_ = 0;
-    screen_ = Screen::Connect;
+    screen_ = Screen::Home;
+    dialog_ = Dialog::None;
     menu_open_ = chat_open_ = false;
     for (auto &u : uploads_)
         if (u.file) std::fclose(u.file);
     uploads_.clear();
+    set_fullscreen(false);
     SDL_SetWindowTitle(win_, "TetherDesk");
     SDL_StartTextInput();
 }
@@ -168,21 +253,45 @@ void App::on_transport_closed() {
         return;
     }
     reconnect_attempts_ = 0;
-    screen_ = Screen::Connect;
+    if (screen_ == Screen::Session) {
+        screen_ = Screen::Home;
+        set_fullscreen(false);
+    }
     menu_open_ = chat_open_ = false;
-    error_ = why.empty() ? "Disconnected" : why;
     SDL_SetWindowTitle(win_, "TetherDesk");
     SDL_StartTextInput();
+    if (!user_closed_) fail_connect(why.empty() ? "Disconnected" : why);
 }
 
-void App::send(const rd_buf &msg) { transport_->send(msg.data, msg.len); }
+void App::send(const rd_buf &msg) {
+    if (!ch_.active) {
+        transport_->send(msg.data, msg.len);
+        return;
+    }
+    rd_buf_clear(&sealed_);
+    rd_channel_seal(&ch_, msg.data, msg.len, &sealed_);
+    transport_->send(sealed_.data, sealed_.len);
+}
 
-void App::handle_message(const std::vector<uint8_t> &m) {
+void App::send_simple(uint8_t type) {
+    rd_buf msg;
+    rd_buf_init(&msg);
+    rd_buf_put_u8(&msg, type);
+    send(msg);
+    rd_buf_free(&msg);
+}
+
+void App::handle_message(std::vector<uint8_t> &m) {
+    if (ch_.active) {
+        plain_.resize(m.size());
+        long pl = rd_channel_open(&ch_, m.data(), m.size(), plain_.data());
+        if (pl < 0) return fail_connect("Decryption failed - the connection may have been tampered with");
+        plain_.resize(size_t(pl));
+        m.swap(plain_);
+    }
     rd_reader r;
     rd_reader_init(&r, m.data(), m.size());
     const uint8_t type = rd_get_u8(&r);
-    rd_buf out;
-    rd_buf_init(&out);
 
     switch (type) {
     case RD_S_HELLO: {
@@ -192,20 +301,37 @@ void App::handle_message(const std::vector<uint8_t> &m) {
         char name[256], os[256];
         rd_get_str(&r, name, sizeof name);
         rd_get_str(&r, os, sizeof os);
-        if (r.err || version != RD_PROTO_VERSION || method != RD_AUTH_HMAC_SHA256 || phase_ != Phase::Hello) {
-            error_ = "Incompatible host version";
-            user_closed_ = true;
-            transport_->close();
-            break;
-        }
+        const uint8_t *ss = rd_get_bytes(&r, 32), *se = rd_get_bytes(&r, 32);
+        if (r.err || version != RD_PROTO_VERSION || method != RD_AUTH_X25519_CHACHA || phase_ != Phase::Hello)
+            return fail_connect(version != RD_PROTO_VERSION ? "The host runs an incompatible TetherDesk version"
+                                                            : "Unexpected handshake from host");
+        uint8_t dh1[32], dh2[32];
+        if (rd_x25519(dh1, ce_priv_, se) != 0 || rd_x25519(dh2, ce_priv_, ss) != 0)
+            return fail_connect("The host sent an invalid key");
+        rd_hs_transcript(transcript_, ce_, ss, se, nonce);
+        rd_hs_keys(&ch_, dh1, dh2, transcript_, 0);
+        rd_wipe(dh1, sizeof dh1);
+        rd_wipe(dh2, sizeof dh2);
+        rd_wipe(ce_priv_, sizeof ce_priv_);
         host_name_ = name;
         host_os_ = os;
-        uint8_t mac[32];
-        rd_hmac_sha256(f_password_.data(), f_password_.size(), nonce, RD_NONCE_LEN, mac);
-        rd_buf_put_u8(&out, RD_C_AUTH);
-        rd_buf_put(&out, mac, sizeof mac);
-        send(out);
-        phase_ = Phase::Auth;
+        char fp[40];
+        rd_fingerprint(ss, fp);
+        host_fp_ = fp;
+
+        // Trust on first use, like SSH. The web viewer was served by this very
+        // host, so it has nothing better to compare against.
+        verify_old_fp_ = store_.known_fingerprint(target_.host, target_.port);
+        if (is_web() || opts_.trust_new_hosts || verify_old_fp_ == host_fp_) {
+            if (!is_web() && verify_old_fp_.empty()) {
+                store_.trust(target_.host, target_.port, host_fp_);
+                store_.save();
+            }
+            send_auth();
+        } else {
+            phase_ = Phase::Verify;
+            dialog_ = Dialog::Verify;
+        }
         break;
     }
     case RD_S_AUTH_RESULT: {
@@ -214,30 +340,61 @@ void App::handle_message(const std::vector<uint8_t> &m) {
         char text[512];
         rd_get_str(&r, text, sizeof text);
         if (!ok) {
-            user_closed_ = true;  // don't auto-reconnect into a rejection
             reconnect_attempts_ = 0;
-            transport_->close();
-            phase_ = Phase::None;
-            screen_ = Screen::Connect;
-            error_ = text;
+            if (screen_ == Screen::Session) {
+                screen_ = Screen::Home;
+                set_fullscreen(false);
+            }
+            if (std::strstr(text, "password") && !is_web()) {
+                // Ask again; forget a remembered password that no longer works.
+                if (SavedPc *pc = store_.find(target_.id); pc && pc->remember) {
+                    pc->password.clear();
+                    store_.save();
+                }
+                fail_connect(text);
+                target_.password.clear();
+                pw_input_.clear();
+                dialog_error_ = text;
+                dialog_ = Dialog::Password;
+            } else {
+                fail_connect(text);
+            }
             SDL_StartTextInput();
             break;
         }
         view_only_ = vo;
         if (phase_ == Phase::Auth) {
             phase_ = Phase::Live;
+            dialog_ = Dialog::None;
+            const bool first = screen_ != Screen::Session;
             screen_ = Screen::Session;
             if (reconnect_attempts_) toast("Reconnected", theme::good);
-            else toast(std::string(text) + " to " + host_name_ + " - press F8 for the menu", theme::good);
+            else toast(std::string(text) + " to " + host_name_ + (is_web() ? " - F8 for the menu" : ""), theme::good);
             reconnect_attempts_ = 0;
             stats_t0_ = last_ping_ = last_clip_check_ = SDL_GetTicks();
+            last_thumb_ = SDL_GetTicks() - 25000;  // first thumbnail a few seconds in
             char *clip = SDL_HasClipboardText() ? SDL_GetClipboardText() : nullptr;
             last_local_clip_ = clip ? clip : "";
             SDL_free(clip);
             SDL_StopTextInput();
             send_settings();
             if (opts_.open_menu) menu_open_ = true;
-            SDL_SetWindowTitle(win_, ("TetherDesk - " + host_name_).c_str());
+            if (first) {
+                bar_until_ = SDL_GetTicks() + 4000;
+                if (!is_web()) {
+                    // Remember this PC (quick connects are saved automatically).
+                    SavedPc pc = target_;
+                    if (pc.id.empty()) pc.id = store_.new_id(), pc.label = pc.host;
+                    if (!pc.remember) pc.password.clear();
+                    pc.last_used = int64_t(std::time(nullptr));
+                    store_.upsert(pc);
+                    store_.save();
+                    target_.id = pc.id;
+                    target_.label = pc.label;
+                    if (target_.fullscreen) set_fullscreen(true);
+                }
+            }
+            SDL_SetWindowTitle(win_, ("TetherDesk - " + (target_.label.empty() ? host_name_ : target_.label)).c_str());
         } else {
             toast(text, vo ? theme::warn : theme::good);
             if (vo) release_input();
@@ -315,7 +472,6 @@ void App::handle_message(const std::vector<uint8_t> &m) {
     }
     default: break;
     }
-    rd_buf_free(&out);
 }
 
 void App::resize_remote(int w, int h) {
@@ -367,13 +523,11 @@ void App::on_frame(rd_reader &r, size_t wire_bytes) {
     rd_buf_put_u8(&ack, RD_C_FRAME_ACK);
     rd_buf_put_u32(&ack, id);
     send(ack);
+    rd_buf_free(&ack);
     if (bad && SDL_GetTicks() - last_refresh_req_ > 1000) {
         last_refresh_req_ = SDL_GetTicks();
-        rd_buf_clear(&ack);
-        rd_buf_put_u8(&ack, RD_C_REFRESH);
-        send(ack);
+        send_simple(RD_C_REFRESH);
     }
-    rd_buf_free(&ack);
     frames_++;
     bytes_ += wire_bytes;
     tiles_last_ = n;
@@ -460,6 +614,40 @@ void App::check_local_clipboard() {
     if (!t.empty() && t != last_local_clip_ && t != last_remote_clip_) send_clipboard(t);
 }
 
+// ------------------------------------------------------------ thumbnails
+
+void App::save_thumbnail() {
+    last_thumb_ = SDL_GetTicks();
+    if (!store_.persistent() || target_.id.empty() || !rw_ || fb_.empty()) return;
+    SDL_Surface *src = SDL_CreateRGBSurfaceWithFormatFrom(fb_.data(), rw_, rh_, 32, rw_ * 4, SDL_PIXELFORMAT_ARGB8888);
+    const int tw = 400, th = std::max(1, 400 * rh_ / rw_);
+    SDL_Surface *dst = SDL_CreateRGBSurfaceWithFormat(0, tw, th, 32, SDL_PIXELFORMAT_ARGB8888);
+    if (src && dst) {
+        SDL_SetSurfaceBlendMode(src, SDL_BLENDMODE_NONE);
+        SDL_BlitScaled(src, nullptr, dst, nullptr);
+        SDL_SaveBMP(dst, store_.thumbnail_path(target_.id).c_str());
+        auto it = thumbs_.find(target_.id);
+        if (it != thumbs_.end()) {
+            if (it->second) SDL_DestroyTexture(it->second);
+            thumbs_.erase(it);
+        }
+    }
+    SDL_FreeSurface(src);
+    SDL_FreeSurface(dst);
+}
+
+SDL_Texture *App::thumbnail(const std::string &id) {
+    auto it = thumbs_.find(id);
+    if (it != thumbs_.end()) return it->second;
+    SDL_Texture *t = nullptr;
+    if (SDL_Surface *s = SDL_LoadBMP(store_.thumbnail_path(id).c_str())) {
+        t = SDL_CreateTextureFromSurface(ren_, s);
+        SDL_FreeSurface(s);
+    }
+    thumbs_[id] = t;
+    return t;
+}
+
 // ------------------------------------------------------------ files
 
 void App::queue_upload(const char *path) {
@@ -496,7 +684,6 @@ void App::queue_upload(const char *path) {
 }
 
 void App::pump_uploads() {
-    if (uploads_.empty()) return;
     Upload *u = nullptr;
     for (auto &c : uploads_)
         if (!c.done_sending) {
@@ -542,7 +729,10 @@ void App::pump_uploads() {
 
 void App::handle_event(const SDL_Event &e) {
     switch (e.type) {
-    case SDL_QUIT: running_ = false; return;
+    case SDL_QUIT:
+        if (phase_ == Phase::Live) save_thumbnail();
+        running_ = false;
+        return;
     case SDL_MOUSEMOTION:
         mouse_x_ = float(e.motion.x);
         mouse_y_ = float(e.motion.y);
@@ -565,33 +755,33 @@ void App::handle_event(const SDL_Event &e) {
         break;
     default: break;
     }
-    if (screen_ == Screen::Connect) handle_connect_key(e);
-    else handle_session_event(e);
+    if (screen_ == Screen::Session && dialog_ == Dialog::None) handle_session_event(e);
+    else handle_form_event(e);
 }
 
-void App::handle_connect_key(const SDL_Event &e) {
-    std::string *fields[4] = {&f_host_, &f_port_, &f_name_, &f_password_};
-    if (e.type == SDL_TEXTINPUT) {
-        std::string &f = *fields[focus_];
-        if (f.size() < 200) f += e.text.text;
-        if (focus_ == 1) f.erase(std::remove_if(f.begin(), f.end(), [](char c) { return c < '0' || c > '9'; }), f.end());
+void App::handle_form_event(const SDL_Event &e) {
+    if (e.type == SDL_MOUSEWHEEL && screen_ == Screen::Home && dialog_ == Dialog::None) {
+        home_scroll_ = std::max(0.f, home_scroll_ - e.wheel.y * 40.f);
+        return;
+    }
+    Field *f = focus_ >= 0 && focus_ < int(last_form_.size()) ? &last_form_[size_t(focus_)] : nullptr;
+    if (e.type == SDL_TEXTINPUT && f) {
+        if (f->value->size() < 200) *f->value += e.text.text;
+        if (f->digits)
+            f->value->erase(std::remove_if(f->value->begin(), f->value->end(), [](char c) { return c < '0' || c > '9'; }),
+                            f->value->end());
     } else if (e.type == SDL_KEYDOWN) {
         SDL_Keycode k = e.key.keysym.sym;
         bool mod = e.key.keysym.mod & (KMOD_CTRL | KMOD_GUI);
-        if (k == SDLK_TAB) focus_ = (focus_ + ((e.key.keysym.mod & KMOD_SHIFT) ? 3 : 1)) % 4;
-        else if (k == SDLK_BACKSPACE && !fields[focus_]->empty()) {
-            std::string &f = *fields[focus_];
-            do f.pop_back();  // drop a whole UTF-8 sequence
-            while (!f.empty() && (static_cast<unsigned char>(f.back()) & 0xC0) == 0x80);
-        } else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) {
-            if (phase_ == Phase::None) start_connect();
-        } else if (k == SDLK_ESCAPE && phase_ != Phase::None) {
-            disconnect_user();
-        } else if (mod && k == SDLK_v) {
-            char *clip = SDL_GetClipboardText();
-            if (clip) {
+        const int n = int(last_form_.size());
+        if (k == SDLK_TAB && n) focus_ = (focus_ + ((e.key.keysym.mod & KMOD_SHIFT) ? n - 1 : 1)) % n;
+        else if (k == SDLK_BACKSPACE && f) pop_utf8(*f->value);
+        else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) submit_ = true;
+        else if (k == SDLK_ESCAPE) cancel_ = true;
+        else if (mod && k == SDLK_v && f) {
+            if (char *clip = SDL_GetClipboardText()) {
                 for (char *p = clip; *p; p++)
-                    if (*p != '\n' && *p != '\r') *fields[focus_] += *p;
+                    if (*p != '\n' && *p != '\r') *f->value += *p;
                 SDL_free(clip);
             }
         }
@@ -600,7 +790,7 @@ void App::handle_connect_key(const SDL_Event &e) {
 
 bool App::over_ui(float x, float y) const {
     if (menu_open_ && menu_rect_.contains(x, y)) return true;
-    return pill_rect_.w > 0 && pill_rect_.contains(x, y);
+    return bar_rect_.w > 0 && bar_rect_.contains(x, y);
 }
 
 void App::window_to_remote(float wx, float wy, int &rx, int &ry) const {
@@ -630,9 +820,8 @@ void App::handle_session_event(const SDL_Event &e) {
             if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_ESCAPE) {
                 chat_open_ = false;
                 SDL_StopTextInput();
-            } else if (k == SDLK_BACKSPACE && !chat_text_.empty()) {
-                do chat_text_.pop_back();
-                while (!chat_text_.empty() && (static_cast<unsigned char>(chat_text_.back()) & 0xC0) == 0x80);
+            } else if (k == SDLK_BACKSPACE) {
+                pop_utf8(chat_text_);
             }
             return;
         }
@@ -650,7 +839,7 @@ void App::handle_session_event(const SDL_Event &e) {
             return;
         }
         if (k == SDLK_F11 && !is_web()) {
-            if (down) SDL_SetWindowFullscreen(win_, (SDL_GetWindowFlags(win_) & SDL_WINDOW_FULLSCREEN_DESKTOP) ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+            if (down) set_fullscreen(!fullscreen());
             return;
         }
         if (menu_open_ && k == SDLK_ESCAPE) {
@@ -663,7 +852,7 @@ void App::handle_session_event(const SDL_Event &e) {
         return;
     }
     case SDL_MOUSEMOTION:
-        if (menu_open_ && over_ui(mouse_x_, mouse_y_)) return;
+        if (over_ui(mouse_x_, mouse_y_)) return;
         window_to_remote(mouse_x_, mouse_y_, ptr_x_, ptr_y_);
         ptr_dirty_ = true;
         return;
@@ -679,7 +868,7 @@ void App::handle_session_event(const SDL_Event &e) {
         case SDL_BUTTON_X2: bit = RD_BTN_X2; break;
         }
         // Presses on the overlay belong to the UI; releases always reach the
-        // host so a drag that ends over the menu doesn't leave a button stuck.
+        // host so a drag that ends over the bar doesn't leave a button stuck.
         if (down && over_ui(mouse_x_, mouse_y_)) return;
         if (down && menu_open_) {
             menu_open_ = false;  // click outside the menu closes it
@@ -732,13 +921,19 @@ void App::render() {
     SDL_GetRendererOutputSize(ren_, &out_w_, &out_h_);
     scale_ = ww > 0 ? float(out_w_) / ww : 1.f;
     ui_.begin(scale_, mouse_x_, mouse_y_, mouse_down_);
+    form_.clear();
 
     SDL_SetRenderDrawColor(ren_, theme::bg.r, theme::bg.g, theme::bg.b, 255);
     SDL_RenderClear(ren_);
-    if (screen_ == Screen::Connect) draw_connect();
-    else draw_session();
+    if (screen_ == Screen::Session) draw_session();
+    else if (is_web()) draw_web_connect();
+    else draw_home();
+    if (dialog_ != Dialog::None) draw_dialog();
     draw_toasts();
 
+    last_form_ = form_;
+    if (focus_ >= int(last_form_.size())) focus_ = 0;
+    submit_ = cancel_ = false;
     ui_.end();
     if (!opts_.screenshot_path.empty() && SDL_GetTicks() >= uint32_t(opts_.screenshot_after * 1000)) {
         SDL_Surface *shot = SDL_CreateRGBSurfaceWithFormat(0, out_w_, out_h_, 32, SDL_PIXELFORMAT_ARGB8888);
@@ -752,48 +947,338 @@ void App::render() {
     SDL_RenderPresent(ren_);
 }
 
-void App::draw_connect() {
+void App::form_field(const Rect &r, const std::string &label, std::string &value, bool secret, bool digits) {
+    const int index = int(form_.size());
+    form_.push_back({&value, secret, digits});
+    ui_.field(r, label, value, focus_ == index, secret);
+    if (ui_.clicked(r)) focus_ = index;
+}
+
+static void draw_logo(Ui &ui, float x, float y, float s) {
+    ui.fill({x, y + 4 * s, 22 * s, 22 * s}, theme::accent, 5 * s);
+    ui.fill({x + 12 * s, y + 14 * s, 22 * s, 22 * s}, {98, 163, 255, 160}, 5 * s);
+}
+
+void App::draw_home() {
     const float W = out_w_ / scale_, H = out_h_ / scale_;
-    // Subtle backdrop grid.
+    const bool modal = dialog_ != Dialog::None;
+    const float pad = std::max(24.f, std::min(56.f, W * 0.05f));
+
+    // Header.
+    ui_.fill({0, 0, W, 72}, {17, 21, 28});
+    ui_.fill({0, 72, W, 1}, theme::panel_border);
+    draw_logo(ui_, pad, 16, 1);
+    ui_.text(pad + 46, 16, "TetherDesk", theme::text, 1.45f);
+    ui_.text(pad + 46, 42, "Remote Desktop", theme::dim);
+    Rect add{W - pad - 120, 20, 120, 34};
+    if (ui_.button(add, "+  Add PC", true) && !modal) {
+        edit_ = SavedPc();
+        edit_.user_name = opts_.name;
+        edit_is_new_ = true;
+        edit_port_ = std::to_string(edit_.port);
+        dialog_error_.clear();
+        dialog_ = Dialog::EditPc;
+        focus_ = 0;
+    }
+
+    // Quick connect.
+    float y = 96;
+    const float qw = std::min(560.f, W - 2 * pad - 130);
+    if (!modal) {
+        form_field({pad, y + 22, qw, 38}, "Quick connect - PC name or address (host or host:port)", quick_host_);
+    } else {
+        ui_.field({pad, y + 22, qw, 38}, "Quick connect - PC name or address (host or host:port)", quick_host_, false, false);
+    }
+    bool go = ui_.button({pad + qw + 10, y + 22, 110, 38}, "Connect", !quick_host_.empty(), !quick_host_.empty());
+    if (!modal && submit_ && focus_ == 0 && !quick_host_.empty()) go = true;
+    if (go && !modal) {
+        SavedPc pc;
+        std::string h = quick_host_;
+        size_t colon = h.rfind(':');
+        pc.port = RD_DEFAULT_PORT;
+        if (colon != std::string::npos && h.find(':') == colon) {
+            pc.port = std::atoi(h.substr(colon + 1).c_str());
+            h = h.substr(0, colon);
+        }
+        pc.host = h;
+        pc.label = h;
+        pc.user_name = opts_.name;
+        for (auto &s : store_.pcs)
+            if (s.host == pc.host && s.port == pc.port) pc = s;
+        begin_connect(pc);
+    }
+    y += 90;
+
+    // Saved PCs grid.
+    ui_.text(pad, y, "Saved PCs", theme::text, 1.15f);
+    ui_.text(pad + ui_.text_width("Saved PCs", 1.15f) + 12, y + 3,
+             std::to_string(store_.pcs.size()) + (store_.pcs.size() == 1 ? " PC" : " PCs"), theme::dim);
+    y += 34;
+    std::vector<SavedPc *> pcs;
+    for (auto &p : store_.pcs) pcs.push_back(&p);
+    std::sort(pcs.begin(), pcs.end(), [](SavedPc *a, SavedPc *b) { return a->last_used > b->last_used; });
+
+    if (pcs.empty()) {
+        Rect box{pad, y, W - 2 * pad, 150};
+        ui_.outline(box, theme::panel_border, 12);
+        ui_.text_centered({box.x, box.y + 40, box.w, 24}, "No saved PCs yet", theme::text, 1.1f);
+        ui_.text_centered({box.x, box.y + 72, box.w, 20},
+                          "Use Quick connect or \"+ Add PC\". PCs you connect to are saved here with a preview.",
+                          theme::dim);
+        return;
+    }
+
+    const float cw = 260, chh = 222, gap = 20;
+    const int cols = std::max(1, int((W - 2 * pad + gap) / (cw + gap)));
+    const int rows = int((pcs.size() + size_t(cols) - 1) / size_t(cols));
+    const float max_scroll = std::max(0.f, y + rows * (chh + gap) + 20 - H);
+    home_scroll_ = std::min(home_scroll_, max_scroll);
+    const float top = y;
+    for (size_t i = 0; i < pcs.size(); i++) {
+        SavedPc &pc = *pcs[i];
+        const float cx = pad + float(i % size_t(cols)) * (cw + gap);
+        const float cy = top + float(i / size_t(cols)) * (chh + gap) - home_scroll_;
+        if (cy + chh < 74 || cy > H) continue;
+        Rect card{cx, cy, cw, chh};
+        const bool hover = !modal && ui_.mouse_over(card) && ui_.mouse_y() > 74;
+        ui_.fill({card.x, card.y + 3, card.w, card.h}, {0, 0, 0, 70}, 12);
+        ui_.fill(card, hover ? Color{30, 36, 48} : theme::panel, 12);
+        ui_.outline(card, hover ? theme::accent : theme::panel_border, 12);
+
+        Rect thumb{cx + 10, cy + 10, cw - 20, 142};
+        ui_.fill(thumb, {10, 13, 18}, 8);
+        if (SDL_Texture *t = thumbnail(pc.id)) {
+            int tw, th;
+            SDL_QueryTexture(t, nullptr, nullptr, &tw, &th);
+            float s = std::min(thumb.w / tw, thumb.h / th);
+            SDL_FRect dst = {(thumb.x + (thumb.w - tw * s) / 2) * scale_, (thumb.y + (thumb.h - th * s) / 2) * scale_,
+                             tw * s * scale_, th * s * scale_};
+            SDL_RenderCopyF(ren_, t, nullptr, &dst);
+        } else {
+            // Placeholder: a little monitor.
+            const float mx = thumb.x + thumb.w / 2, my = thumb.y + thumb.h / 2;
+            ui_.outline({mx - 34, my - 30, 68, 44}, theme::dim, 4);
+            ui_.fill({mx - 3, my + 14, 6, 10}, theme::dim);
+            ui_.fill({mx - 16, my + 24, 32, 3}, theme::dim, 1);
+        }
+        ui_.text(cx + 14, cy + 160, ellipsize(ui_, pc.label, cw - 28, 1.1f), theme::text, 1.1f);
+        std::string sub = pc.host + (pc.port != RD_DEFAULT_PORT ? ":" + std::to_string(pc.port) : "");
+        ui_.text(cx + 14, cy + 184, ellipsize(ui_, sub, cw - 110), theme::dim);
+        std::string when = relative_time(pc.last_used);
+        ui_.text(cx + cw - 14 - ui_.text_width(when), cy + 184, when, theme::dim);
+
+        if (hover || pending_delete_ == pc.id) {
+            Rect edit{thumb.x + thumb.w - 124, thumb.y + 8, 56, 26}, del{thumb.x + thumb.w - 64, thumb.y + 8, 56, 26};
+            if (pending_delete_ == pc.id) {
+                if (ui_.button({del.x - 70, del.y, 66, 26}, "Keep")) pending_delete_.clear();
+                if (ui_.button(del, "Delete", true)) {
+                    auto it = thumbs_.find(pc.id);
+                    if (it != thumbs_.end()) {
+                        if (it->second) SDL_DestroyTexture(it->second);
+                        thumbs_.erase(it);
+                    }
+                    std::string id = pc.id;
+                    pending_delete_.clear();
+                    store_.remove(id);
+                    store_.save();
+                    return;  // list changed; redraw next frame
+                }
+            } else {
+                if (ui_.button(edit, "Edit")) {
+                    edit_ = pc;
+                    edit_is_new_ = false;
+                    edit_port_ = std::to_string(edit_.port);
+                    dialog_error_.clear();
+                    dialog_ = Dialog::EditPc;
+                    focus_ = 0;
+                }
+                if (ui_.button(del, "Remove")) pending_delete_ = pc.id;
+            }
+        }
+        if (!modal && !ui_.consumed_click() && ui_.clicked(card) && ui_.mouse_y() > 74 && pending_delete_.empty())
+            begin_connect(pc);
+    }
+}
+
+void App::draw_web_connect() {
+    const float W = out_w_ / scale_, H = out_h_ / scale_;
     for (float x = 0; x < W; x += 48) ui_.fill({x, 0, 1, H}, {255, 255, 255, 6});
     for (float y = 0; y < H; y += 48) ui_.fill({0, y, W, 1}, {255, 255, 255, 6});
 
-    const float cw = std::min(420.f, W - 32), ch = 440;
+    const float cw = std::min(420.f, W - 32), ch = 400;
     const Rect card{(W - cw) / 2, std::max(16.f, (H - ch) / 2), cw, ch};
     ui_.fill({card.x, card.y + 6, card.w, card.h}, {0, 0, 0, 90}, 14);
     ui_.fill(card, theme::panel, 14);
     ui_.outline(card, theme::panel_border, 14);
 
     float y = card.y + 28;
-    // Logo: two linked squares.
-    ui_.fill({card.x + 28, y + 4, 22, 22}, theme::accent, 5);
-    ui_.fill({card.x + 40, y + 14, 22, 22}, {98, 163, 255, 160}, 5);
+    draw_logo(ui_, card.x + 28, y, 1);
     ui_.text(card.x + 76, y, "TetherDesk", theme::text, 1.6f);
-    ui_.text(card.x + 76, y + 26, is_web() ? "Remote desktop - web viewer" : "Remote desktop viewer", theme::dim);
+    ui_.text(card.x + 76, y + 26, "Remote Desktop - web viewer", theme::dim);
     y += 76;
 
-    const char *labels[4] = {"Host", "Port", "Your name", "Password"};
-    std::string *vals[4] = {&f_host_, &f_port_, &f_name_, &f_password_};
     const float fx = card.x + 28, fw = card.w - 56;
-    Rect rects[4] = {{fx, y, fw * 0.68f, 36}, {fx + fw * 0.72f, y, fw * 0.28f, 36}, {fx, y + 64, fw, 36}, {fx, y + 128, fw, 36}};
-    for (int i = 0; i < 4; i++) {
-        ui_.field(rects[i], labels[i], *vals[i], focus_ == i && phase_ == Phase::None, i == 3);
-        if (ui_.clicked(rects[i])) focus_ = i;
-    }
+    const bool busy = phase_ != Phase::None || reconnect_at_;
+    form_field({fx, y, fw * 0.68f, 36}, "Host", f_host_);
+    form_field({fx + fw * 0.72f, y, fw * 0.28f, 36}, "Port", f_port_, false, true);
+    form_field({fx, y + 64, fw, 36}, "Your name", f_name_);
+    form_field({fx, y + 128, fw, 36}, "Password", f_password_, true);
     y += 184;
 
-    const bool busy = phase_ != Phase::None || reconnect_at_;
     Rect btn{fx, y, fw, 40};
+    bool go = false;
     if (busy) {
         uint32_t dots = (SDL_GetTicks() / 400) % 4;
         const char *what = phase_ == Phase::Auth ? "Authenticating" : "Connecting";
-        if (ui_.button(btn, std::string(what) + std::string(dots, '.') + "   (Esc to cancel)", false)) disconnect_user();
-    } else if (ui_.button(btn, "Connect", true)) {
+        if (ui_.button(btn, std::string(what) + std::string(dots, '.') + "   (Esc to cancel)") || cancel_)
+            disconnect_user();
+    } else {
+        go = ui_.button(btn, "Connect", true) || submit_;
+    }
+    if (go) {
+        SavedPc pc;
+        pc.host = f_host_;
+        pc.label = f_host_;
+        pc.port = std::atoi(f_port_.c_str());
+        pc.user_name = f_name_;
+        pc.password = f_password_;
+        target_ = pc;
         start_connect();
     }
     y += 52;
     if (!error_.empty()) ui_.text(fx, y, ellipsize(ui_, error_, fw), theme::bad);
     else ui_.text(fx, y, "Tab to move between fields, Enter to connect", theme::dim);
+}
+
+Rect App::dialog_frame(float w, float h, const std::string &title) {
+    const float W = out_w_ / scale_, H = out_h_ / scale_;
+    ui_.fill({0, 0, W, H}, {0, 0, 0, 150});
+    w = std::min(w, W - 24);
+    Rect d{(W - w) / 2, std::max(12.f, (H - h) / 2), w, h};
+    ui_.fill({d.x, d.y + 6, d.w, d.h}, {0, 0, 0, 110}, 14);
+    ui_.fill(d, theme::panel, 14);
+    ui_.outline(d, theme::panel_border, 14);
+    ui_.text(d.x + 24, d.y + 20, ellipsize(ui_, title, d.w - 48, 1.3f), theme::text, 1.3f);
+    return {d.x + 24, d.y + 60, d.w - 48, d.h - 80};
+}
+
+void App::draw_dialog() {
+    switch (dialog_) {
+    case Dialog::EditPc: {
+        Rect c = dialog_frame(460, 470, edit_is_new_ ? "Add PC" : "Edit PC");
+        float y = c.y + 18;
+        form_field({c.x, y, c.w, 36}, "Display name (optional)", edit_.label);
+        y += 62;
+        form_field({c.x, y, c.w * 0.7f, 36}, "PC address", edit_.host);
+        form_field({c.x + c.w * 0.74f, y, c.w * 0.26f, 36}, "Port", edit_port_, false, true);
+        edit_.port = std::atoi(edit_port_.c_str());
+        y += 62;
+        form_field({c.x, y, c.w, 36}, "Your name (shown to others on the host)", edit_.user_name);
+        y += 62;
+        form_field({c.x, y, c.w, 36}, "Password (optional)", edit_.password, true);
+        y += 50;
+        ui_.checkbox(c.x, y, "Remember password on this computer", edit_.remember);
+        ui_.checkbox(c.x, y + 28, "Open sessions full screen", edit_.fullscreen);
+        y += 66;
+        if (!dialog_error_.empty()) ui_.text(c.x, y - 8, dialog_error_, theme::bad);
+        bool save = ui_.button({c.x + c.w - 110, y + 12, 110, 36}, "Save", true) || submit_;
+        if (ui_.button({c.x + c.w - 230, y + 12, 110, 36}, "Cancel") || cancel_) dialog_ = Dialog::None;
+        else if (save) {
+            if (edit_.host.empty()) dialog_error_ = "Enter the PC's address";
+            else if (edit_.port <= 0 || edit_.port > 65535) dialog_error_ = "Port must be 1-65535";
+            else {
+                if (edit_.label.empty()) edit_.label = edit_.host;
+                if (edit_.id.empty()) edit_.id = store_.new_id();
+                SavedPc keep = edit_;
+                if (!keep.remember) keep.password.clear();
+                store_.upsert(keep);
+                store_.save();
+                dialog_ = Dialog::None;
+            }
+        }
+        break;
+    }
+    case Dialog::Password: {
+        Rect c = dialog_frame(440, 300, "Connect to " + (target_.label.empty() ? target_.host : target_.label));
+        ui_.text(c.x, c.y - 8, target_.host + ":" + std::to_string(target_.port), theme::dim);
+        float y = c.y + 38;
+        form_field({c.x, y, c.w, 36}, "Password", pw_input_, true);
+        y += 50;
+        ui_.checkbox(c.x, y, "Remember password", pw_remember_);
+        y += 34;
+        if (!dialog_error_.empty()) ui_.text(c.x, y, dialog_error_, theme::bad);
+        y += 28;
+        bool go = ui_.button({c.x + c.w - 110, y, 110, 36}, "Connect", true) || submit_;
+        if (ui_.button({c.x + c.w - 230, y, 110, 36}, "Cancel") || cancel_) {
+            dialog_ = Dialog::None;
+        } else if (go && !pw_input_.empty()) {
+            target_.password = pw_input_;
+            target_.remember = pw_remember_;
+            if (SavedPc *pc = store_.find(target_.id)) {
+                pc->remember = pw_remember_;
+                pc->password = pw_remember_ ? pw_input_ : "";
+                store_.save();
+            }
+            start_connect();
+        }
+        break;
+    }
+    case Dialog::Verify: {
+        const bool changed = !verify_old_fp_.empty();
+        Rect c = dialog_frame(520, changed ? 350 : 262, changed ? "Warning: this PC's identity changed" : "Verify this PC");
+        float y = c.y;
+        if (changed) {
+            ui_.text(c.x, y, "The identity key of " + target_.host + " is different from last time.", theme::bad);
+            y += 22;
+            ui_.text(c.x, y, "This happens if TetherDesk was reinstalled there - or if someone", theme::text);
+            y += 20;
+            ui_.text(c.x, y, "is intercepting your connection. Only continue if you're sure.", theme::text);
+            y += 30;
+        } else {
+            ui_.text(c.x, y, "First connection to " + ellipsize(ui_, target_.host, 260) + ".", theme::text);
+            y += 22;
+            ui_.text(c.x, y, "Check that this matches the \"Identity\" the host printed:", theme::dim);
+            y += 32;
+        }
+        Rect fpbox{c.x, y, c.w, 44};
+        ui_.fill(fpbox, theme::field, 8);
+        ui_.text_centered(fpbox, host_fp_, changed ? theme::warn : theme::good, 1.15f);
+        y += 56;
+        if (changed) {
+            ui_.text(c.x, y, "previously: " + verify_old_fp_, theme::dim);
+            y += 24;
+        }
+        y += 16;
+        bool trust = ui_.button({c.x + c.w - 170, y, 170, 36}, changed ? "Trust new identity" : "Trust and connect", !changed);
+        if (!changed && submit_) trust = true;
+        if (ui_.button({c.x + c.w - 290, y, 110, 36}, "Cancel", changed) || cancel_) {
+            disconnect_user();
+        } else if (trust) {
+            store_.trust(target_.host, target_.port, host_fp_);
+            store_.save();
+            send_auth();
+        }
+        break;
+    }
+    case Dialog::Connecting: {
+        Rect c = dialog_frame(440, 200, (dialog_error_.empty() ? "Connecting to " : "Couldn't connect to ") +
+                                            (target_.label.empty() ? target_.host : target_.label));
+        if (dialog_error_.empty()) {
+            uint32_t dots = (SDL_GetTicks() / 400) % 4;
+            const char *what = phase_ == Phase::Auth ? "Signing in" : phase_ == Phase::Verify ? "Verifying" : "Connecting";
+            ui_.text(c.x, c.y + 4, std::string(what) + std::string(dots, '.'), theme::dim);
+            ui_.text(c.x, c.y + 28, "Encrypted with X25519 + ChaCha20-Poly1305", theme::dim);
+            if (ui_.button({c.x + c.w - 110, c.y + 72, 110, 36}, "Cancel") || cancel_) disconnect_user();
+        } else {
+            ui_.text(c.x, c.y + 4, ellipsize(ui_, dialog_error_, c.w), theme::bad);
+            bool retry = ui_.button({c.x + c.w - 110, c.y + 72, 110, 36}, "Retry", true) || submit_;
+            if (ui_.button({c.x + c.w - 230, c.y + 72, 110, 36}, "Close") || cancel_) dialog_ = Dialog::None;
+            else if (retry) begin_connect(target_);
+        }
+        break;
+    }
+    case Dialog::None: break;
+    }
 }
 
 void App::draw_session() {
@@ -804,16 +1289,7 @@ void App::draw_session() {
     }
     const float W = out_w_ / scale_, H = out_h_ / scale_;
 
-    // Pull-down tab at the top centre; always reachable with the mouse.
-    const bool near_top = mouse_y_ < 48 && mouse_x_ > W / 2 - 160 && mouse_x_ < W / 2 + 160;
-    pill_rect_ = {0, 0, 0, 0};
-    if ((near_top || !tex_) && !menu_open_) {
-        pill_rect_ = {W / 2 - 110, 6, 220, 30};
-        ui_.fill(pill_rect_, {22, 27, 36, 225}, 15);
-        ui_.text_centered(pill_rect_, "TetherDesk menu  (F8)", theme::text);
-        if (ui_.clicked(pill_rect_)) menu_open_ = true;
-    }
-
+    draw_connection_bar();
     if (show_stats_) draw_hud();
     if (menu_open_) draw_menu();
     else menu_rect_ = {0, 0, 0, 0};
@@ -842,7 +1318,7 @@ void App::draw_session() {
         uy -= 48;
     }
 
-    if (phase_ != Phase::Live) {
+    if (phase_ != Phase::Live && dialog_ == Dialog::None) {
         ui_.fill({0, 0, W, H}, {0, 0, 0, 150});
         Rect box{W / 2 - 170, H / 2 - 40, 340, 80};
         ui_.fill(box, theme::panel, 12);
@@ -852,14 +1328,54 @@ void App::draw_session() {
     }
 }
 
+// Remote Desktop-style connection bar: shown for a few seconds after
+// connecting, whenever the mouse touches the top edge, or permanently when
+// pinned.
+void App::draw_connection_bar() {
+    const float W = out_w_ / scale_;
+    const uint32_t now = SDL_GetTicks();
+    const float bw = std::min(is_web() ? 400.f : 560.f, W - 16);
+    Rect bar{(W - bw) / 2, 0, bw, 38};
+    const bool hot = mouse_y_ <= 4 || (bar_rect_.w > 0 && bar_rect_.contains(mouse_x_, mouse_y_)) || menu_open_;
+    if (hot) bar_until_ = std::max(bar_until_, now + 1200);
+    if (!bar_pinned_ && now >= bar_until_) {
+        bar_rect_ = {0, 0, 0, 0};
+        ui_.fill({W / 2 - 30, 0, 60, 3}, {98, 163, 255, 120}, 1);  // hint where the bar lives
+        return;
+    }
+    bar_rect_ = bar;
+    ui_.fill({bar.x, bar.y - 10, bar.w, bar.h + 10}, {22, 27, 36, 245}, 10);
+    ui_.outline({bar.x, bar.y - 10, bar.w, bar.h + 10}, theme::panel_border, 10);
+    float x = bar.x + 6;
+    if (ui_.button({x, 5, 44, 28}, bar_pinned_ ? "Pin*" : "Pin", bar_pinned_)) bar_pinned_ = !bar_pinned_;
+    x += 50;
+    const float right_w = is_web() ? 190 : 330;
+    std::string title = target_.label.empty() ? host_name_ : target_.label;
+    ui_.fill({x + 2, 16, 7, 7}, view_only_ ? theme::warn : theme::good, 3.5f);
+    ui_.text(x + 14, 10, ellipsize(ui_, title, bar.x + bar.w - right_w - x - 20), theme::text);
+    float bx = bar.x + bar.w - right_w;
+    if (ui_.button({bx, 5, 70, 28}, "Menu", menu_open_)) menu_open_ = !menu_open_;
+    bx += 76;
+    if (!is_web()) {
+        if (ui_.button({bx, 5, 64, 28}, "Hide")) {
+            release_input();
+            SDL_MinimizeWindow(win_);
+        }
+        bx += 70;
+        if (ui_.button({bx, 5, 78, 28}, fullscreen() ? "Window" : "Full")) set_fullscreen(!fullscreen());
+        bx += 84;
+    }
+    if (ui_.button({bx, 5, 100, 28}, "Disconnect")) disconnect_user();
+}
+
 void App::draw_hud() {
     char l1[128], l2[128];
     std::snprintf(l1, sizeof l1, "%d fps   %.1f Mbit/s   %s", fps_shown_, mbps_,
                   rtt_ms_ >= 0 ? (std::to_string(int(rtt_ms_ + 0.5)) + " ms").c_str() : "- ms");
-    std::snprintf(l2, sizeof l2, "%dx%d   %s   %d tiles", rw_, rh_,
+    std::snprintf(l2, sizeof l2, "%dx%d   %s   %d tiles   encrypted", rw_, rh_,
                   quality_ == 255 ? "auto quality" : kQualityNames[quality_], tiles_last_);
     const float w = std::max(ui_.text_width(l1), ui_.text_width(l2)) + 24;
-    Rect box{12, 12, w, 54};
+    Rect box{12, 46, w, 54};
     ui_.fill(box, {0, 0, 0, 170}, 8);
     ui_.text(box.x + 12, box.y + 8, l1, theme::text);
     ui_.text(box.x + 12, box.y + 28, l2, theme::dim);
@@ -869,7 +1385,7 @@ void App::draw_menu() {
     const float W = out_w_ / scale_, H = out_h_ / scale_;
     const float mw = std::min(kMenuW, W - 24);
     const float x = (W - mw) / 2, pad = 18, bx = x + 120, bw_avail = mw - 120 - pad;
-    float y = 10;
+    float y = 46;
     // Layout is computed on the fly; the panel is drawn first using last
     // frame's height so buttons appear on top of it.
     static float last_h = 420;
@@ -885,7 +1401,9 @@ void App::draw_menu() {
     std::string sub = host_os_ + "  -  " + std::to_string(rw_) + "x" + std::to_string(rh_) + "  -  " +
                       (view_only_ ? "view only" : "you have control");
     ui_.text(x + pad, y, ellipsize(ui_, sub, mw - 2 * pad), view_only_ ? theme::warn : theme::dim);
-    y += 32;
+    y += 20;
+    ui_.text(x + pad, y, "Identity " + host_fp_, theme::dim);
+    y += 30;
 
     auto row_label = [&](const char *label) { ui_.text(x + pad, y + 6, label, theme::dim); };
     auto buttons_row = [&](const std::vector<std::string> &labels, int active, auto on_click) {
@@ -927,11 +1445,6 @@ void App::draw_menu() {
         if (ui_.button({bx + bw + 6, y, bw, 28}, "1:1 pixels", scale_mode_ == ScaleMode::Native))
             scale_mode_ = ScaleMode::Native;
         if (ui_.button({bx + 2 * (bw + 6), y, bw, 28}, "Stats", show_stats_)) show_stats_ = !show_stats_;
-        if (!is_web()) {
-            bool fs = SDL_GetWindowFlags(win_) & SDL_WINDOW_FULLSCREEN_DESKTOP;
-            if (ui_.button({bx + 3 * (bw + 6), y, bw, 28}, "Fullscreen", fs))
-                SDL_SetWindowFullscreen(win_, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
-        }
         y += 36;
     }
     row_label("Actions");
@@ -941,13 +1454,7 @@ void App::draw_menu() {
             for (uint16_t k : {RD_HID_LCTRL, RD_HID_LALT, RD_HID_DELETE}) send_key(k, true);
             for (uint16_t k : {RD_HID_DELETE, RD_HID_LALT, RD_HID_LCTRL}) send_key(k, false);
         }
-        if (ui_.button({bx + bw + 6, y, bw, 28}, "Refresh")) {
-            rd_buf msg;
-            rd_buf_init(&msg);
-            rd_buf_put_u8(&msg, RD_C_REFRESH);
-            send(msg);
-            rd_buf_free(&msg);
-        }
+        if (ui_.button({bx + bw + 6, y, bw, 28}, "Refresh")) send_simple(RD_C_REFRESH);
         if (ui_.button({bx + 2 * (bw + 6), y, bw, 28}, "Chat  (F9)")) {
             release_input();
             chat_open_ = true;
@@ -979,10 +1486,10 @@ void App::draw_menu() {
     }
     y += 10;
     ui_.text(x + pad, y,
-             is_web() ? "F8 menu  -  F9 chat" : "F8 menu  -  F9 chat  -  F11 fullscreen  -  drop files to send them",
+             is_web() ? "F8 menu  -  F9 chat" : "F8 menu  -  F9 chat  -  F11 full screen  -  drop files to send them",
              theme::dim);
     y += 30;
-    last_h = std::min(y - 10, H - 20);
+    last_h = std::min(y - 56, H - 60);
 }
 
 void App::draw_toasts() {

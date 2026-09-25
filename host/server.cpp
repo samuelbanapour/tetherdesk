@@ -187,7 +187,7 @@ int Server::run() {
         for (auto &c : conns_) {
             if (c->dead) continue;
             bool authed = c->state == State::Active;
-            if (!authed && now - c->created_us > 20 * kSecond) close_conn(*c, "handshake timeout");
+            if (!authed && now - c->created_us > 120 * kSecond) close_conn(*c, "handshake timeout");
             else if (authed && now - c->last_rx_us > 45 * kSecond) close_conn(*c, "timed out");
         }
 
@@ -376,7 +376,13 @@ void Server::serve_file(Conn &c, std::string path) {
 
 void Server::send_msg(Conn &c, const rd_buf &msg) {
     if (c.dead) return;
-    rd_ws_write_frame(&c.out, RD_WS_BINARY, msg.data, msg.len, 0);
+    if (!c.ch.active) {
+        rd_ws_write_frame(&c.out, RD_WS_BINARY, msg.data, msg.len, 0);
+        return;
+    }
+    // Seal straight into the send queue behind the WebSocket header.
+    rd_ws_write_header(&c.out, RD_WS_BINARY, msg.len + RD_TAG_LEN);
+    rd_channel_seal(&c.ch, msg.data, msg.len, &c.out);
 }
 
 void Server::broadcast(const rd_buf &msg, const Conn *except, bool control_only) {
@@ -405,6 +411,13 @@ void Server::handle_ws_messages(Conn &c) {
 }
 
 void Server::handle_message(Conn &c, const uint8_t *p, size_t n) {
+    if (c.ch.active) {
+        c.plain.resize(n);
+        long pl = n >= RD_TAG_LEN ? rd_channel_open(&c.ch, p, n, c.plain.data()) : -1;
+        if (pl < 0) return close_conn(c, "decryption failed (tampered or corrupted data)");
+        p = c.plain.data();
+        n = size_t(pl);
+    }
     rd_reader r;
     rd_reader_init(&r, p, n);
     const uint8_t type = rd_get_u8(&r);
@@ -416,9 +429,10 @@ void Server::handle_message(Conn &c, const uint8_t *p, size_t n) {
         uint16_t version = rd_get_u16(&r);
         char name[256];
         rd_get_str(&r, name, sizeof name);
+        const uint8_t *ce = rd_get_bytes(&r, 32);
         c.name = clean_text(name, 32);
         if (c.name.empty()) c.name = "Viewer";
-        if (version != RD_PROTO_VERSION) {
+        if (version != RD_PROTO_VERSION || !ce) {
             rd_buf_put_u8(&msg, RD_S_AUTH_RESULT);
             rd_buf_put_u8(&msg, 0);
             rd_buf_put_u8(&msg, 0);
@@ -427,14 +441,26 @@ void Server::handle_message(Conn &c, const uint8_t *p, size_t n) {
             c.close_after_flush = true;
             return;
         }
+        // Key agreement: ephemeral-ephemeral + ephemeral(viewer)-static(host).
+        uint8_t se_priv[32], se[32], dh1[32], dh2[32];
         rd_random(c.nonce, sizeof c.nonce);
+        if (rd_x25519_keypair(se_priv, se) != 0 || rd_x25519(dh1, se_priv, ce) != 0 ||
+            rd_x25519(dh2, cfg_.static_priv, ce) != 0)
+            return close_conn(c, "invalid key exchange");
+        rd_hs_transcript(c.transcript, ce, cfg_.static_pub, se, c.nonce);
         rd_buf_put_u8(&msg, RD_S_HELLO);
         rd_buf_put_u16(&msg, RD_PROTO_VERSION);
-        rd_buf_put_u8(&msg, RD_AUTH_HMAC_SHA256);
+        rd_buf_put_u8(&msg, RD_AUTH_X25519_CHACHA);
         rd_buf_put(&msg, c.nonce, sizeof c.nonce);
         rd_buf_put_str(&msg, cfg_.host_name.c_str());
         rd_buf_put_str(&msg, plat_.os_name.c_str());
-        send_msg(c, msg);
+        rd_buf_put(&msg, cfg_.static_pub, 32);
+        rd_buf_put(&msg, se, 32);
+        send_msg(c, msg);  // last plaintext message
+        rd_hs_keys(&c.ch, dh1, dh2, c.transcript, 1);
+        rd_wipe(se_priv, sizeof se_priv);
+        rd_wipe(dh1, sizeof dh1);
+        rd_wipe(dh2, sizeof dh2);
         c.state = State::Auth;
         return;
     }
@@ -457,7 +483,7 @@ void Server::handle_message(Conn &c, const uint8_t *p, size_t n) {
             return fail("Too many failed attempts - try again in " + std::to_string(wait_s) + " s");
         }
         uint8_t expected[32];
-        rd_hmac_sha256(cfg_.password.data(), cfg_.password.size(), c.nonce, sizeof c.nonce, expected);
+        rd_hs_auth_mac(expected, cfg_.password.data(), cfg_.password.size(), c.transcript);
         if (!mac || !rd_ct_equal(mac, expected, sizeof expected)) {
             record_auth_failure(c.addr);
             log("wrong password from %s (\"%s\")", c.addr.c_str(), c.name.c_str());
@@ -907,6 +933,16 @@ void Server::finish_upload(Conn &c, uint32_t id, bool ok, const std::string &tex
 // ------------------------------------------------------------ brute-force protection
 
 bool Server::locked_out(const std::string &addr, int &seconds_left) {
+    // Global limit: many failures from many addresses (a distributed guess
+    // attack when exposed to the internet) pauses all logins briefly.
+    uint64_t now_us = rd_now_us();
+    recent_failures_.erase(std::remove_if(recent_failures_.begin(), recent_failures_.end(),
+                                          [&](uint64_t t) { return now_us - t > 60 * kSecond; }),
+                           recent_failures_.end());
+    if (recent_failures_.size() >= 30) {
+        seconds_left = int((recent_failures_.front() + 60 * kSecond - now_us) / kSecond) + 1;
+        return true;
+    }
     auto it = failures_.find(addr);
     if (it == failures_.end()) return false;
     uint64_t now = rd_now_us();
@@ -916,6 +952,7 @@ bool Server::locked_out(const std::string &addr, int &seconds_left) {
 }
 
 void Server::record_auth_failure(const std::string &addr) {
+    recent_failures_.push_back(rd_now_us());
     Failures &f = failures_[addr];
     f.count++;
     if (f.count >= 5) {

@@ -1,16 +1,23 @@
 // app.h - the TetherDesk viewer: one codebase for the native (SDL2) and web
 // (Emscripten/WebAssembly) builds.
+//
+// Native builds open on a Remote Desktop-style home screen (saved PCs with
+// thumbnails, quick connect); the web build shows a single connect form for
+// the host that served the page.
 #pragma once
 
 #include <SDL.h>
 
 #include <cstdio>
 #include <deque>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "rd_bytes.h"
+#include "rd_secure.h"
+#include "store.h"
 #include "transport.h"
 #include "ui.h"
 
@@ -25,6 +32,7 @@ struct Options {
     bool fullscreen = false;
     bool show_stats = false;
     bool open_menu = false;         // open the session menu once connected
+    bool trust_new_hosts = false;   // skip the first-connection fingerprint prompt
     std::string screenshot_path;    // save the rendered window, then quit
     double screenshot_after = 3.0;  // seconds after start
 };
@@ -38,8 +46,9 @@ public:
     bool tick();
 
 private:
-    enum class Screen { Connect, Session };
-    enum class Phase { None, Connecting, Hello, Auth, Live };
+    enum class Screen { Home, Session };
+    enum class Phase { None, Connecting, Hello, Verify, Auth, Live };
+    enum class Dialog { None, EditPc, Password, Verify, Connecting };
     enum class ScaleMode { Fit, Native };
 
     struct Toast {
@@ -62,15 +71,23 @@ private:
         std::string name, addr;
         bool view_only;
     };
+    struct Field {
+        std::string *value;
+        bool secret, digits;
+    };
 
     // connection & protocol
+    void begin_connect(const SavedPc &pc);  // asks for a password if needed
     void start_connect();
+    void send_auth();
     void disconnect_user();
     void on_transport_closed();
-    void handle_message(const std::vector<uint8_t> &m);
+    void fail_connect(const std::string &why);
+    void handle_message(std::vector<uint8_t> &m);
     void on_frame(rd_reader &r, size_t wire_bytes);
     void resize_remote(int w, int h);
     void send(const rd_buf &msg);
+    void send_simple(uint8_t type);
     void send_settings();
     void send_pointer(int wheel_x = 0, int wheel_y = 0);
     void send_key(uint16_t hid, bool down);
@@ -78,10 +95,12 @@ private:
     void send_chat();
     void send_clipboard(const std::string &text);
     void check_local_clipboard();
+    void set_fullscreen(bool on);
+    bool fullscreen() const;
 
     // input
     void handle_event(const SDL_Event &e);
-    void handle_connect_key(const SDL_Event &e);
+    void handle_form_event(const SDL_Event &e);
     void handle_session_event(const SDL_Event &e);
     bool over_ui(float x, float y) const;
     void window_to_remote(float wx, float wy, int &rx, int &ry) const;
@@ -90,37 +109,70 @@ private:
     void queue_upload(const char *path);
     void pump_uploads();
 
+    // thumbnails
+    void save_thumbnail();
+    SDL_Texture *thumbnail(const std::string &id);
+
     // drawing
     void render();
-    void draw_connect();
+    void draw_home();
+    void draw_web_connect();
+    void draw_dialog();
     void draw_session();
+    void draw_connection_bar();
     void draw_menu();
     void draw_hud();
     void draw_toasts();
     void toast(const std::string &text, Color c = theme::text);
     void update_view();
+    Rect dialog_frame(float w, float h, const std::string &title);
+    void form_field(const Rect &r, const std::string &label, std::string &value, bool secret = false,
+                    bool digits = false);
 
     SDL_Window *win_;
     SDL_Renderer *ren_;
     Options opts_;
     Ui ui_;
+    Store store_;
     bool running_ = true;
     float scale_ = 1;  // output pixels per window point
     int out_w_ = 0, out_h_ = 0;
 
-    // connect screen
-    Screen screen_ = Screen::Connect;
+    // home screen / dialogs
+    Screen screen_ = Screen::Home;
+    Dialog dialog_ = Dialog::None;
+    std::vector<Field> form_;       // fields drawn this frame, in tab order
+    std::vector<Field> last_form_;  // fields drawn last frame (receive keystrokes)
+    int focus_ = 0;
+    bool submit_ = false, cancel_ = false;
+    std::string quick_host_;
+    SavedPc edit_;
+    std::string edit_port_;
+    bool edit_is_new_ = false;
+    std::string pw_input_;
+    bool pw_remember_ = false;
+    std::string dialog_error_;
+    std::map<std::string, SDL_Texture *> thumbs_;
+    std::string pending_delete_;
+    float home_scroll_ = 0;
+
+    // web connect form
     std::string f_host_, f_port_, f_name_, f_password_;
-    int focus_ = 3;
-    std::string error_;
 
     // connection
     std::unique_ptr<Transport> transport_;
+    SavedPc target_;
     Phase phase_ = Phase::None;
     bool user_closed_ = false;
     int reconnect_attempts_ = 0;
     uint32_t reconnect_at_ = 0;
-    uint32_t connect_started_ = 0;
+    std::string error_;
+    uint8_t ce_priv_[32] = {}, ce_[32] = {};
+    uint8_t transcript_[32] = {};
+    rd_channel ch_{};
+    std::string host_fp_, verify_old_fp_;
+    std::vector<uint8_t> plain_;
+    rd_buf sealed_{};
 
     // remote screen
     int rw_ = 0, rh_ = 0;
@@ -131,7 +183,7 @@ private:
     std::string host_name_, host_os_;
     bool view_only_ = false;
     std::vector<Viewer> viewers_;
-    uint32_t last_refresh_req_ = 0;
+    uint32_t last_refresh_req_ = 0, last_thumb_ = 0;
     float view_x_ = 0, view_y_ = 0, view_s_ = 1;  // remote -> output pixel transform
 
     // settings
@@ -143,7 +195,9 @@ private:
     // overlays
     bool menu_open_ = false;
     Rect menu_rect_{0, 0, 0, 0};
-    Rect pill_rect_{0, 0, 0, 0};
+    Rect bar_rect_{0, 0, 0, 0};
+    bool bar_pinned_ = false;
+    uint32_t bar_until_ = 0;
     bool chat_open_ = false;
     std::string chat_text_;
     std::deque<Toast> toasts_;

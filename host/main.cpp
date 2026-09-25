@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <sys/stat.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -25,6 +26,7 @@
 #include "rd_crypto.h"
 #include "rd_net.h"
 #include "rd_proto.h"
+#include "rd_secure.h"
 #include "server.h"
 
 namespace {
@@ -44,6 +46,7 @@ void usage() {
         "  --web-root DIR      directory containing the built web viewer\n"
         "  --downloads DIR     where received files are saved\n"
         "  --native-res        capture HiDPI displays at full pixel density (more bandwidth)\n"
+        "  --key-file PATH     host identity key (default: in the user config directory)\n"
         "  --threads N         encoder threads (default: CPU cores, max 8)\n"
         "  --demo              share a synthetic demo desktop (no OS permissions needed)\n"
         "  --no-console        don't read operator commands from stdin\n"
@@ -109,6 +112,52 @@ void print_lan_urls(int port) {
 #endif
 }
 
+std::string config_dir() {
+#ifdef _WIN32
+    const char *appdata = std::getenv("APPDATA");
+    return std::string(appdata ? appdata : ".") + "\\TetherDesk";
+#elif defined(__APPLE__)
+    return home_dir() + "/Library/Application Support/TetherDesk";
+#else
+    const char *xdg = std::getenv("XDG_CONFIG_HOME");
+    return (xdg && *xdg ? std::string(xdg) : home_dir() + "/.config") + "/tetherdesk";
+#endif
+}
+
+// The host's long-term X25519 identity. Viewers pin its fingerprint the first
+// time they connect, so it must stay the same across restarts.
+bool load_or_create_host_key(const std::string &path, uint8_t priv[32], uint8_t pub[32]) {
+    if (FILE *f = std::fopen(path.c_str(), "rb")) {
+        size_t n = std::fread(priv, 1, 32, f);
+        std::fclose(f);
+        if (n == 32) {
+            rd_x25519_base(pub, priv);
+            return true;
+        }
+    }
+    if (rd_x25519_keypair(priv, pub) != 0) return false;
+    std::string dir = path.substr(0, path.find_last_of("/\\"));
+#ifdef _WIN32
+    std::system(("mkdir \"" + dir + "\" 2>nul").c_str());
+#else
+    std::string cur;
+    for (size_t i = 0; i <= dir.size(); i++) {
+        if (i == dir.size() || dir[i] == '/') {
+            if (!cur.empty()) mkdir(cur.c_str(), 0700);
+        }
+        if (i < dir.size()) cur += dir[i];
+    }
+#endif
+    FILE *f = std::fopen(path.c_str(), "wb");
+    if (!f) return false;
+#ifndef _WIN32
+    chmod(path.c_str(), 0600);
+#endif
+    bool ok = std::fwrite(priv, 1, 32, f) == 32;
+    std::fclose(f);
+    return ok;
+}
+
 void on_signal(int) { td::Server::stop(); }
 
 }  // namespace
@@ -117,6 +166,7 @@ int main(int argc, char **argv) {
     td::ServerConfig cfg;
     td::PlatformOptions popts;
     bool demo = false, list_only = false;
+    std::string key_file;
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -138,6 +188,7 @@ int main(int argc, char **argv) {
         else if (a == "--web-root") cfg.web_root = next();
         else if (a == "--downloads") cfg.downloads_dir = next();
         else if (a == "--native-res") popts.native_resolution = true;
+        else if (a == "--key-file") key_file = next();
         else if (a == "--threads") cfg.encoder_threads = std::max(1, std::min(64, std::atoi(next())));
         else if (a == "--demo") demo = true;
         else if (a == "--no-console") cfg.console = false;
@@ -187,6 +238,19 @@ int main(int argc, char **argv) {
             }
     }
     if (cfg.downloads_dir.empty()) cfg.downloads_dir = home_dir() + "/Downloads/TetherDesk";
+    if (key_file.empty()) key_file = config_dir() + "/host_key";
+    if (!load_or_create_host_key(key_file, cfg.static_priv, cfg.static_pub)) {
+        std::fprintf(stderr, "error: cannot read or create the host key at %s\n", key_file.c_str());
+        return 1;
+    }
+    char fingerprint[40];
+    rd_fingerprint(cfg.static_pub, fingerprint);
+    const bool loopback = cfg.bind == "127.0.0.1" || cfg.bind == "::1";
+    if (!cfg.password.empty() && cfg.password.size() < 8 && !loopback) {
+        std::fprintf(stderr, "error: passwords must be at least 8 characters when the host is reachable from the "
+                             "network (or use --bind 127.0.0.1)\n");
+        return 1;
+    }
     bool generated = cfg.password.empty();
     if (generated) cfg.password = random_password();
     char host[256] = "host";
@@ -199,14 +263,16 @@ int main(int argc, char **argv) {
         std::printf("  Sharing   %s (%dx%d)\n", displays[size_t(cfg.display)].name.c_str(),
                     displays[size_t(cfg.display)].width, displays[size_t(cfg.display)].height);
     std::printf("  Password  %s%s\n", cfg.password.c_str(), generated ? "   (generated - use --password to choose)" : "");
+    std::printf("  Identity  %s   (viewers see this the first time they connect)\n", fingerprint);
     std::printf("  Mode      %s, up to %d fps, %d viewers max%s\n", cfg.view_only ? "view only" : "full control",
                 cfg.max_fps, cfg.max_viewers, cfg.allow_files ? "" : ", file transfer off");
     std::printf("  Web       %s\n", cfg.web_root.empty() ? "(web viewer not built - native viewer only)" : cfg.web_root.c_str());
     std::printf("\n  Connect a browser or `tetherdesk <address>` to:\n    http://localhost:%d/\n", cfg.port);
     if (cfg.bind != "127.0.0.1" && cfg.bind != "::1") print_lan_urls(cfg.port);
-    std::printf("\n  Traffic is not encrypted: use it on a trusted network, or tunnel it\n"
-                "  (e.g. ssh -L %d:localhost:%d you@this-host) when crossing the internet.\n",
-                cfg.port, cfg.port);
+    std::printf("\n  Sessions are end-to-end encrypted (X25519 + ChaCha20-Poly1305).\n"
+                "  To reach this host from the internet, forward TCP port %d on your router to it\n"
+                "  (or use a VPN such as Tailscale) - see README.\n",
+                cfg.port);
     if (cfg.console) std::printf("  Type /help for operator commands.\n");
     std::printf("\n");
     std::fflush(stdout);

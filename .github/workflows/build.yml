@@ -1,0 +1,110 @@
+name: build
+
+# Builds and tests the host, native viewer, probe and web viewer on Windows,
+# Linux and macOS. Pushing a tag like v1.0.0 also publishes zips to a GitHub
+# release (no workflow artifacts are uploaded, to stay within storage quota).
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SDL_VERSION: 2.30.9
+  EMSDK_VERSION: 3.1.74
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+          - os: ubuntu-22.04
+            name: linux-x64
+          - os: macos-14
+            name: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libx11-dev libxtst-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install sdl2
+
+      - name: Download SDL2 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://github.com/libsdl-org/SDL/releases/download/release-$env:SDL_VERSION/SDL2-devel-$env:SDL_VERSION-VC.zip" -OutFile sdl.zip
+          Expand-Archive sdl.zip -DestinationPath "$env:RUNNER_TEMP"
+          "SDL2_DIR=$env:RUNNER_TEMP\SDL2-$env:SDL_VERSION\cmake" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Configure
+        shell: bash
+        run: |
+          extra=""
+          if [ "$RUNNER_OS" = "macOS" ]; then extra="-DTD_STATIC_SDL=ON"; fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release $extra
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: End-to-end test (demo host + encrypted probe)
+        shell: bash
+        run: |
+          bin=build; [ "$RUNNER_OS" = "Windows" ] && bin=build/Release
+          ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
+          "$bin/tetherdesk-host$ext" --demo --password ci-password-1 --no-console \
+              --key-file "$RUNNER_TEMP/host_key" --downloads "$RUNNER_TEMP/dl" > host.log 2>&1 &
+          sleep 3
+          "$bin/tetherdesk-probe$ext" localhost --password wrong-password --expect-fail
+          "$bin/tetherdesk-probe$ext" localhost --password ci-password-1 --seconds 3 --quality 0 \
+              --type "CI says hello" --copy
+          cat host.log
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+
+      - name: Build web viewer
+        shell: bash
+        run: |
+          emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-web --parallel
+
+      - name: Package
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          out="tetherdesk-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          mkdir -p "$out/web"
+          cp build-web/index.html build-web/index.js build-web/index.wasm "$out/web/"
+          cp README.md "$out/"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp build/Release/*.exe "$out/"
+            cp "$RUNNER_TEMP/SDL2-$SDL_VERSION/lib/x64/SDL2.dll" "$out/"
+            7z a "$out.zip" "$out" > /dev/null
+          else
+            cp build/tetherdesk build/tetherdesk-host build/tetherdesk-probe "$out/"
+            zip -qr "$out.zip" "$out"
+          fi
+          echo "ASSET=$out.zip" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}

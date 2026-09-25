@@ -30,6 +30,10 @@ enum {
 /* Computes Sec-WebSocket-Accept for a client key (out: 29 bytes incl. NUL). */
 void rd_ws_accept_key(const char *client_key, char out[29]);
 
+/* Appends just an (unmasked, server-side) frame header for a payload of
+ * `len` bytes that the caller appends itself, avoiding a copy. */
+void rd_ws_write_header(rd_buf *out, int opcode, size_t len);
+
 /* Appends one frame. Clients must set `mask` (RFC 6455 section 5.3). */
 void rd_ws_write_frame(rd_buf *out, int opcode, const void *payload, size_t len, int mask);
 

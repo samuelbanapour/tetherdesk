@@ -17,6 +17,23 @@ void rd_ws_accept_key(const char *client_key, char out[29]) {
     rd_base64(digest, 20, out);
 }
 
+void rd_ws_write_header(rd_buf *out, int opcode, size_t len) {
+    uint8_t hdr[10];
+    size_t h = 0;
+    hdr[h++] = (uint8_t)(0x80 | (opcode & 0x0F));
+    if (len < 126) {
+        hdr[h++] = (uint8_t)len;
+    } else if (len <= 0xFFFF) {
+        hdr[h++] = 126;
+        hdr[h++] = (uint8_t)(len >> 8);
+        hdr[h++] = (uint8_t)len;
+    } else {
+        hdr[h++] = 127;
+        for (int i = 7; i >= 0; i--) hdr[h++] = (uint8_t)((uint64_t)len >> (8 * i));
+    }
+    rd_buf_put(out, hdr, h);
+}
+
 void rd_ws_write_frame(rd_buf *out, int opcode, const void *payload, size_t len, int mask) {
     uint8_t hdr[14];
     size_t h = 0;
