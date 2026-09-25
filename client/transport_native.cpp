@@ -33,14 +33,11 @@ public:
         rd_ws_reader_free(&ws_);
         rd_ws_reader_init(&ws_, RD_MAX_SERVER_MSG, 0);
         error_.clear();
-        char err[256] = "";
-        sock_ = rd_net_connect_start(host.c_str(), port, err, sizeof err);
-        if (sock_ == RD_INVALID_SOCKET) {
-            fail(err);
-            return;
-        }
+        host_ = host;
+        port_ = port;
+        attempt_ = 0;
+        if (!open_socket()) return;
         state_ = State::Connecting;
-        tcp_up_ = false;
         started_us_ = rd_now_us();
 
         uint8_t raw[16];
@@ -68,7 +65,15 @@ public:
         if (!tcp_up_) {
             if (p.revents & (POLLOUT | POLLERR | POLLHUP)) {
                 int e = rd_net_connect_result(sock_);
-                if (e != 0) return fail("could not connect (error " + std::to_string(e) + ") - is the host running?");
+                if (e != 0) {
+                    // Try the next address (e.g. IPv4 after IPv6 for "localhost").
+                    rd_net_close(sock_);
+                    sock_ = RD_INVALID_SOCKET;
+                    attempt_++;
+                    if (!open_socket(true))
+                        return fail("could not connect (error " + std::to_string(e) + ") - is the host running?");
+                    return;
+                }
                 tcp_up_ = true;
             } else {
                 if (rd_now_us() - started_us_ > 10000000) fail("connection timed out");
@@ -120,6 +125,22 @@ public:
     }
 
 private:
+    // Opens a socket to the current address attempt, skipping addresses that
+    // fail immediately. `quiet` keeps the original error if all fail.
+    bool open_socket(bool quiet = false) {
+        char err[256] = "";
+        for (; attempt_ < 8; attempt_++) {
+            sock_ = rd_net_connect_start(host_.c_str(), port_, attempt_, err, sizeof err);
+            if (sock_ != RD_INVALID_SOCKET) {
+                tcp_up_ = false;
+                return true;
+            }
+            if (std::strncmp(err, "no more", 7) == 0 || std::strncmp(err, "cannot resolve", 14) == 0) break;
+        }
+        if (!quiet) fail(err);
+        return false;
+    }
+
     bool finish_handshake() {
         const char *end = nullptr;
         for (size_t i = 0; i + 3 < in_.len; i++)
@@ -167,6 +188,8 @@ private:
     }
 
     rd_socket sock_ = RD_INVALID_SOCKET;
+    std::string host_;
+    int port_ = 0, attempt_ = 0;
     State state_ = State::Idle;
     bool tcp_up_ = false;
     uint64_t started_us_ = 0;

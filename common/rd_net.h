@@ -32,9 +32,11 @@ void rd_net_close(rd_socket s);
 rd_socket rd_net_listen(const char *bind_addr, int port, char *err, size_t err_cap);
 /* Accepts a pending connection; fills a printable peer address. */
 rd_socket rd_net_accept(rd_socket listener, char *addr, size_t addr_cap);
-/* Starts a non-blocking connect (resolving host). Completion: poll for POLLOUT
- * then rd_net_connect_result(). */
-rd_socket rd_net_connect_start(const char *host, int port, char *err, size_t err_cap);
+/* Starts a non-blocking connect to the `attempt`-th address `host` resolves
+ * to (0-based), so callers can fall back from IPv6 to IPv4 and so on.
+ * Completion: poll for POLLOUT then rd_net_connect_result(). Returns invalid
+ * with err set when there is no such address or the connect fails at once. */
+rd_socket rd_net_connect_start(const char *host, int port, int attempt, char *err, size_t err_cap);
 /* 0 = connected, otherwise the socket error code. */
 int rd_net_connect_result(rd_socket s);
 

@@ -28,7 +28,7 @@
 namespace td {
 
 struct ServerConfig {
-    std::string bind = "0.0.0.0";
+    std::string bind = "::";  // dual-stack: IPv6 and IPv4
     int port = 5980;
     std::string password;
     bool view_only = false;       // every viewer is view-only

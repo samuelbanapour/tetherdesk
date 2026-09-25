@@ -80,6 +80,7 @@ int main(int argc, char **argv) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
         if (a == "--password") password = next();
+        else if (a == "--port") port = std::atoi(next().c_str());
         else if (a == "--seconds") seconds = std::atof(next().c_str());
         else if (a == "--snapshot") snapshot = next();
         else if (a == "--type") type_text = next();
@@ -89,6 +90,7 @@ int main(int argc, char **argv) {
         else if (a == "--expect-fail") expect_fail = true;
         else if (a[0] != '-') {
             size_t c = a.rfind(':');
+            if (c != std::string::npos && a.find(':') != c) c = std::string::npos;  // bare IPv6 address
             host = c == std::string::npos ? a : a.substr(0, c);
             if (c != std::string::npos) port = std::atoi(a.substr(c + 1).c_str());
         } else {

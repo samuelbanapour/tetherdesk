@@ -123,6 +123,8 @@ Server::~Server() {
 int Server::run() {
     char err[256];
     listener_ = rd_net_listen(cfg_.bind.c_str(), cfg_.port, err, sizeof err);
+    if (listener_ == RD_INVALID_SOCKET && cfg_.bind == "::")  // no IPv6 on this machine
+        listener_ = rd_net_listen("0.0.0.0", cfg_.port, err, sizeof err);
     if (listener_ == RD_INVALID_SOCKET) {
         std::fprintf(stderr, "error: %s\n", err);
         return 1;

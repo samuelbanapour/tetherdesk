@@ -36,7 +36,7 @@ void usage() {
         "TetherDesk host - share this computer's screen with TetherDesk viewers (native or browser)\n\n"
         "usage: tetherdesk-host [options]\n"
         "  --port N            listen port (default %d)\n"
-        "  --bind ADDR         listen address (default 0.0.0.0; use 127.0.0.1 for SSH tunnels)\n"
+        "  --bind ADDR         listen address (default :: = all IPv6+IPv4; 127.0.0.1 = this machine only)\n"
         "  --password PW       viewer password (default: a random one is generated)\n"
         "  --view-only         viewers can watch but not control\n"
         "  --no-files          refuse file uploads\n"

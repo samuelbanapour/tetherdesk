@@ -69,11 +69,11 @@ jobs:
           ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
           "$bin/tetherdesk-host$ext" --demo --password ci-password-1 --no-console \
               --key-file "$RUNNER_TEMP/host_key" --downloads "$RUNNER_TEMP/dl" > host.log 2>&1 &
+          trap 'echo "--- host log ---"; cat host.log' EXIT
           sleep 3
           "$bin/tetherdesk-probe$ext" localhost --password wrong-password --expect-fail
           "$bin/tetherdesk-probe$ext" localhost --password ci-password-1 --seconds 3 --quality 0 \
               --type "CI says hello" --copy
-          cat host.log
 
       - uses: mymindstorm/setup-emsdk@v14
         with:

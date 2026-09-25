@@ -122,21 +122,28 @@ rd_socket rd_net_accept(rd_socket listener, char *addr, size_t addr_cap) {
     return s;
 }
 
-rd_socket rd_net_connect_start(const char *host, int port, char *err, size_t err_cap) {
-    struct addrinfo hints, *res = NULL;
+rd_socket rd_net_connect_start(const char *host, int port, int attempt, char *err, size_t err_cap) {
+    struct addrinfo hints, *list = NULL;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     char ports[16];
     snprintf(ports, sizeof ports, "%d", port);
-    if (getaddrinfo(host, ports, &hints, &res) != 0 || !res) {
+    if (getaddrinfo(host, ports, &hints, &list) != 0 || !list) {
         snprintf(err, err_cap, "cannot resolve '%s'", host);
+        return RD_INVALID_SOCKET;
+    }
+    struct addrinfo *res = list;
+    for (int i = 0; i < attempt && res; i++) res = res->ai_next;
+    if (!res) {
+        snprintf(err, err_cap, "no more addresses for '%s'", host);
+        freeaddrinfo(list);
         return RD_INVALID_SOCKET;
     }
     rd_socket s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (s == RD_INVALID_SOCKET) {
         snprintf(err, err_cap, "socket() failed");
-        freeaddrinfo(res);
+        freeaddrinfo(list);
         return s;
     }
     set_nonblocking(s);
@@ -146,7 +153,7 @@ rd_socket rd_net_connect_start(const char *host, int port, char *err, size_t err
         rd_net_close(s);
         s = RD_INVALID_SOCKET;
     }
-    freeaddrinfo(res);
+    freeaddrinfo(list);
     return s;
 }
 
