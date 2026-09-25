@@ -22,7 +22,7 @@ tetherdesk/
               store.cpp            saved PCs, pinned host identities, thumbnails
               transport_native.cpp  TCP + our own WebSocket client
               transport_web.cpp     browser WebSocket via Emscripten
-  relay/    internet relay server (C++), Dockerfile + fly.toml, QuickSupport download page
+  relay/    internet relay server (C++), Dockerfile, QuickSupport download page (render.yaml)
   tools/    tetherdesk-probe (headless test client), gen_font.py / gen_icon.py (build-time only)
   tests/    codec / crypto / WebSocket self-tests
 ```
@@ -71,19 +71,21 @@ Prebuilt Windows, Linux and macOS zips are attached to each
 
 ### Helping someone: nothing to install, no VPN
 
-1. Send them **https://tetherdesk-relay.fly.dev/get**. They download **TetherDesk QuickSupport**:
+1. Send them **https://tetherdesk-relay.onrender.com/get**. They download **TetherDesk QuickSupport**:
    - on Windows, a single `.exe`;
    - on a Mac, a zip containing the app.
 2. They run it. There's no installer, and closing it ends the session. It shows an **ID** (like `728 857 467`) and a **password**.
 3. You connect in one of two ways:
-   - open **https://tetherdesk-relay.fly.dev/** in any browser and enter the ID and password, or
+   - open **https://tetherdesk-relay.onrender.com/** in any browser and enter the ID and password, or
    - type the ID into TetherDesk's **Quick connect**.
 
 This works across the internet with no port forwarding or VPN. Both computers make *outgoing* connections to the relay (`relay/`), which pairs them by ID.
 
 The session stays end-to-end encrypted between the two computers, so the relay only ever forwards ciphertext. It can't see the screen or keystrokes, and it can't learn the password.
 
-To run your own relay, use `relay/deploy.sh` (Fly.io). Then point hosts and viewers at it with `--relay your.host`.
+The relay runs on Render from `relay/Dockerfile` (see `render.yaml`). It redeploys automatically when `main` changes, and it builds the web viewer from source. It's on Render's free plan, so after a quiet spell the first connection can take about a minute while it wakes up.
+
+To use a different relay, pass `--relay your.host` to the host and the viewer. Port 443 uses TLS, verified against the operating system's trusted root certificates.
 
 ### Controlling your own computers
 
@@ -131,3 +133,7 @@ The browser viewer is itself downloaded from the host over plain HTTP. If you ne
 - **Web viewer:** it cannot read or write the browser's system clipboard (that would need JavaScript). Some browser shortcuts, such as Cmd+W, are caught by the browser and never reach the remote machine.
 - **Windows:** Ctrl+Alt+Del cannot be injected with SendInput.
 - **Windows and Linux:** CI compiles these hosts and runs an encrypted end-to-end test against the demo desktop. Real-screen capture and input on them haven't been tried on actual hardware yet.
+
+## License
+
+TetherDesk is proprietary: **all rights reserved**. The source is published for viewing only. See [LICENSE](LICENSE), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the open-source components it uses.

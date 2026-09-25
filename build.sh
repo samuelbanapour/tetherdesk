@@ -10,8 +10,12 @@ cd "$(dirname "$0")"
 what="${1:-all}"
 jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 
+# Downloaded dependencies (SDL, mbedTLS) are unpacked on the system disk:
+# exFAT/FAT volumes add "._*" files that confuse CMake's FetchContent.
+deps="${TMPDIR:-/tmp}/tetherdesk-deps"
+
 native() {
-  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT_BASE_DIR="$deps"
   cmake --build build -j "$jobs"
 }
 

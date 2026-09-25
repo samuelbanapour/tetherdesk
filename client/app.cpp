@@ -214,12 +214,12 @@ void App::start_connect() {
         // Through the internet relay: both computers only connect outwards.
         if (is_web()) {
             if (opts_.web_relay) transport_->connect(opts_.web_host, opts_.web_port, "/v/" + id, opts_.web_secure);
-            else transport_->connect(opts_.relay, 443, "/v/" + id, true);
+            else transport_->connect(opts_.relay.substr(0, opts_.relay.rfind(':')), 443, "/v/" + id, true);
         } else {
             size_t c = opts_.relay.rfind(':');
             std::string rh = c == std::string::npos ? opts_.relay : opts_.relay.substr(0, c);
-            int rp = c == std::string::npos ? 80 : std::atoi(opts_.relay.substr(c + 1).c_str());
-            transport_->connect(rh, rp, "/v/" + id);
+            int rp = c == std::string::npos ? 443 : std::atoi(opts_.relay.substr(c + 1).c_str());
+            transport_->connect(rh, rp, "/v/" + id, rp == 443);  // TLS to the relay on 443
         }
     } else {
         transport_->connect(target_.host, target_.port);

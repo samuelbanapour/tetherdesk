@@ -5,6 +5,7 @@
 #include "rd_crypto.h"
 #include "rd_net.h"
 #include "rd_proto.h"
+#include "rd_tls.h"
 #include "rd_ws.h"
 #include "transport.h"
 
@@ -26,7 +27,7 @@ public:
         rd_ws_reader_free(&ws_);
     }
 
-    void connect(const std::string &host, int port, const std::string &path, bool) override {
+    void connect(const std::string &host, int port, const std::string &path, bool secure) override {
         close();
         rd_buf_clear(&in_);
         rd_buf_clear(&out_);
@@ -36,6 +37,8 @@ public:
         host_ = host;
         port_ = port;
         path_ = path;
+        secure_ = secure;
+        tls_ready_ = false;
         attempt_ = 0;
         if (!open_socket()) return;
         state_ = State::Connecting;
@@ -70,11 +73,16 @@ public:
                     // Try the next address (e.g. IPv4 after IPv6 for "localhost").
                     rd_net_close(sock_);
                     sock_ = RD_INVALID_SOCKET;
+                    drop_tls();
                     attempt_++;
                     if (!open_socket(true)) return fail(connect_error(e));
                     return;
                 }
                 tcp_up_ = true;
+                if (secure_) {
+                    tls_ = rd_tls_new(sock_, host_.c_str());
+                    if (!tls_) return fail("could not start a secure connection");
+                }
             } else {
                 if (rd_now_us() - started_us_ > 10000000)
                     fail("No answer from " + host_ + " - check the address, and that this computer can reach it "
@@ -82,11 +90,20 @@ public:
                 return;
             }
         }
+        if (tls_ && !tls_ready_) {
+            int h = rd_tls_handshake(tls_);
+            if (h < 0) return fail(std::string("secure connection failed (") + rd_tls_error(tls_) + ")");
+            if (h > 0) {
+                if (rd_now_us() - started_us_ > 15000000) fail("secure connection timed out");
+                return;
+            }
+            tls_ready_ = true;
+        }
         flush();
         uint8_t buf[65536];
         bool peer_closed = false;
         for (int i = 0; i < 256; i++) {  // cap per poll so the UI stays responsive
-            long n = rd_net_recv(sock_, buf, sizeof buf);
+            long n = io_recv(buf, sizeof buf);
             if (n < 0) {
                 peer_closed = true;  // still deliver what already arrived (e.g. an auth rejection)
                 break;
@@ -123,6 +140,7 @@ public:
                 rd_ws_write_frame(&out_, RD_WS_CLOSE, "\x03\xe8", 2, 1);  // 1000 normal closure
                 flush();
             }
+            drop_tls();
             rd_net_close(sock_);
         }
         sock_ = RD_INVALID_SOCKET;
@@ -193,9 +211,10 @@ private:
     }
 
     void flush() {
+        if (!tcp_up_ || (tls_ && !tls_ready_)) return;
         size_t off = 0;
         while (off < out_.len) {
-            long n = rd_net_send(sock_, out_.data + off, out_.len - off);
+            long n = io_send(out_.data + off, out_.len - off);
             if (n < 0) {
                 rd_buf_clear(&out_);
                 fail("connection lost");
@@ -207,7 +226,16 @@ private:
         rd_buf_consume(&out_, off);
     }
 
+    long io_send(const void *p, size_t n) { return tls_ ? rd_tls_send(tls_, p, n) : rd_net_send(sock_, p, n); }
+    long io_recv(void *p, size_t n) { return tls_ ? rd_tls_recv(tls_, p, n) : rd_net_recv(sock_, p, n); }
+    void drop_tls() {
+        rd_tls_free(tls_);
+        tls_ = nullptr;
+        tls_ready_ = false;
+    }
+
     void fail(const std::string &why) {
+        drop_tls();
         if (error_.empty()) error_ = why;
         if (sock_ != RD_INVALID_SOCKET) rd_net_close(sock_);
         sock_ = RD_INVALID_SOCKET;
@@ -217,6 +245,8 @@ private:
     rd_socket sock_ = RD_INVALID_SOCKET;
     std::string host_, path_;
     int port_ = 0, attempt_ = 0;
+    bool secure_ = false, tls_ready_ = false;
+    rd_tls *tls_ = nullptr;
     State state_ = State::Idle;
     bool tcp_up_ = false;
     uint64_t started_us_ = 0;

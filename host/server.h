@@ -23,6 +23,7 @@
 #include "rd_bytes.h"
 #include "rd_net.h"
 #include "rd_secure.h"
+#include "rd_tls.h"
 #include "rd_ws.h"
 
 namespace td {
@@ -82,6 +83,8 @@ private:
         bool client_ws = false;
         bool relay_ctl = false;
         bool tcp_pending = false;
+        rd_tls *tls = nullptr;       // relay link on port 443
+        bool tls_handshaking = false;
         char ws_accept[29] = "";
 
         // Session state (valid once authenticated).
@@ -115,6 +118,7 @@ private:
             rd_ws_reader_init(&ws, 0, 1);
         }
         ~Conn() {
+            rd_tls_free(tls);
             rd_buf_free(&in);
             rd_buf_free(&out);
             rd_ws_reader_free(&ws);

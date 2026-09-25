@@ -12,7 +12,6 @@
 //                                     4404 if that ID isn't online
 //   GET /, /index.*                   the web viewer (C++ -> WebAssembly)
 //   GET /get                          download page for the QuickSupport app
-//   GET /download/FILE                QuickSupport downloads
 //   GET /healthz                      health check
 //
 // A host owns its ID for as long as it's connected (it proves ownership with
@@ -253,8 +252,17 @@ void handle_http(Conn &c) {
     line >> method >> target;
     const std::string headers = req.substr(req.find("\r\n") + 2);
 
-    char fly_ip[64];
-    if (rd_http_header(headers.c_str(), "Fly-Client-IP", fly_ip, sizeof fly_ip)) c.ip = fly_ip;
+    // Behind a hosting proxy the TCP peer is the proxy; the real client IP
+    // (used by hosts for per-address lockout) comes from a header.
+    char fwd[256];
+    if (rd_http_header(headers.c_str(), "Fly-Client-IP", fwd, sizeof fwd) ||
+        rd_http_header(headers.c_str(), "True-Client-IP", fwd, sizeof fwd) ||
+        rd_http_header(headers.c_str(), "X-Forwarded-For", fwd, sizeof fwd)) {
+        std::string ip = fwd;
+        ip = ip.substr(0, ip.find(','));
+        ip.erase(0, ip.find_first_not_of(' '));
+        if (!ip.empty() && ip.size() < 64) c.ip = ip;
+    }
 
     char upgrade[64] = "", key[128] = "";
     rd_http_header(headers.c_str(), "Upgrade", upgrade, sizeof upgrade);

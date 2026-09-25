@@ -1,0 +1,26 @@
+TetherDesk - Proprietary License
+
+Copyright (c) 2026 Samuel Banapour. All rights reserved.
+
+This repository is published for viewing only. No license or right is granted
+to use, copy, modify, merge, publish, distribute, sublicense, sell, host,
+deploy, or create derivative works of this software or any part of it, in
+source or binary form, for any purpose, commercial or non-commercial, without
+the prior written permission of the copyright holder.
+
+Viewing the source code, and the forking that GitHub's Terms of Service allow
+on GitHub itself, do not grant any of the rights above. Any other use is
+prohibited.
+
+Official prebuilt releases published by the copyright holder may be downloaded
+and run, unmodified, solely to use TetherDesk as intended. This permission does
+not extend to redistributing them.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF
+OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+Third-party components remain under their own licenses; see
+THIRD_PARTY_NOTICES.md.

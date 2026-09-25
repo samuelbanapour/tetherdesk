@@ -55,6 +55,28 @@ if(TD_RELAY_ONLY)
   return()
 endif()
 
+# ---------------------------------------------------------------- TLS
+# Native apps reach the internet relay over HTTPS/WSS using mbedTLS (C),
+# built from source so there is no system dependency.
+if(NOT EMSCRIPTEN)
+  include(FetchContent)
+  set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+  set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+  set(GEN_FILES OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(mbedtls
+    URL https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.2/mbedtls-3.6.2.tar.bz2
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(mbedtls)
+  add_library(td_tls STATIC common/rd_tls.c)
+  target_link_libraries(td_tls PUBLIC td_common mbedtls mbedx509 mbedcrypto)
+  if(APPLE)
+    target_link_libraries(td_tls PUBLIC "-framework Security" "-framework CoreFoundation")
+  elseif(WIN32)
+    target_link_libraries(td_tls PUBLIC crypt32)
+  endif()
+endif()
+
 if(NOT EMSCRIPTEN)
 # ---------------------------------------------------------------- host
 set(HOST_SOURCES
@@ -76,7 +98,7 @@ endif()
 # ("TetherDesk --run-host"), which makes the app a single self-contained file.
 add_library(td_host STATIC ${HOST_SOURCES})
 target_include_directories(td_host PUBLIC host)
-target_link_libraries(td_host PUBLIC td_common)
+target_link_libraries(td_host PUBLIC td_common td_tls)
 target_compile_options(td_host PRIVATE ${TD_WARNINGS})
 find_package(Threads REQUIRED)
 target_link_libraries(td_host PUBLIC Threads::Threads)
@@ -186,7 +208,7 @@ endif()
 
 # Headless client for health checks / end-to-end tests (no SDL needed).
 add_executable(tetherdesk-probe tools/td_probe.cpp client/transport_native.cpp)
-target_link_libraries(tetherdesk-probe PRIVATE td_common)
+target_link_libraries(tetherdesk-probe PRIVATE td_common td_tls)
 target_compile_options(tetherdesk-probe PRIVATE ${TD_WARNINGS})
 
 # ---------------------------------------------------------------- tests

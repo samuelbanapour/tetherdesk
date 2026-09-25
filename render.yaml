@@ -1,0 +1,10 @@
+# Render blueprint for the TetherDesk relay (free web service, Docker).
+services:
+  - type: web
+    name: tetherdesk-relay
+    runtime: docker
+    plan: free
+    dockerfilePath: ./relay/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: true

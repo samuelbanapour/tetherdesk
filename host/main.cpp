@@ -30,7 +30,7 @@
 #include "server.h"
 
 #ifndef TD_DEFAULT_RELAY
-#define TD_DEFAULT_RELAY "tetherdesk-relay.fly.dev"
+#define TD_DEFAULT_RELAY "tetherdesk-relay.onrender.com"
 #endif
 
 namespace {
@@ -292,7 +292,7 @@ int td_host_main(int argc, char **argv) {
     if (!relay.empty()) {
         size_t colon = relay.rfind(':');
         cfg.relay_host = colon == std::string::npos ? relay : relay.substr(0, colon);
-        cfg.relay_port = colon == std::string::npos ? 80 : std::atoi(relay.substr(colon + 1).c_str());
+        cfg.relay_port = colon == std::string::npos ? 443 : std::atoi(relay.substr(colon + 1).c_str());
         std::string dir = key_file.substr(0, key_file.find_last_of("/\\"));
         if (!load_or_create_relay_id(dir + "/relay_id", cfg.relay_id, cfg.relay_key)) {
             std::fprintf(stderr, "warning: cannot store relay ID - internet access disabled\n");

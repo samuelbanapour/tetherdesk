@@ -144,4 +144,4 @@ jobs:
 
             Use **Connect to a PC** (an ID works from anywhere, via the relay) to control another computer, or
             **Share this PC** to let someone connect to yours. Helpers can also connect from any browser at
-            https://tetherdesk-relay.fly.dev/
+            https://tetherdesk-relay.onrender.com/

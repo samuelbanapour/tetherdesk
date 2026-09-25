@@ -154,7 +154,7 @@ int Server::run() {
         const size_t n_conns = conns_.size();
         for (auto &c : conns_) {
             short ev = POLLIN;
-            if (c->pending() || c->tcp_pending) ev |= POLLOUT;
+            if (c->pending() || c->tcp_pending || c->tls_handshaking) ev |= POLLOUT;
             fds.push_back({c->sock, ev, 0});
             any_active |= c->state == State::Active;
         }
@@ -188,9 +188,28 @@ int Server::run() {
                         continue;
                     }
                     c.tcp_pending = false;
+                    if (cfg_.relay_port == 443) {
+                        c.tls = rd_tls_new(c.sock, cfg_.relay_host.c_str());
+                        if (!c.tls) {
+                            close_conn(c, "TLS setup failed");
+                            continue;
+                        }
+                        c.tls_handshaking = true;
+                    }
                     flush(c);
                 }
-                continue;
+                if (c.tcp_pending) continue;
+            }
+            if (c.tls_handshaking) {
+                int h = rd_tls_handshake(c.tls);
+                if (h < 0) {
+                    if (c.relay_ctl) log("relay: %s", rd_tls_error(c.tls));
+                    close_conn(c, "TLS handshake failed");
+                    continue;
+                }
+                if (h > 0) continue;
+                c.tls_handshaking = false;
+                flush(c);
             }
             if (re & (POLLIN | POLLHUP | POLLERR)) read_conn(c);
             if ((re & POLLOUT) && !c.dead) flush(c);
@@ -355,7 +374,7 @@ void Server::read_conn(Conn &c) {
     uint8_t buf[65536];
     size_t total = 0;
     while (total < (4u << 20)) {
-        long n = rd_net_recv(c.sock, buf, sizeof buf);
+        long n = c.tls ? rd_tls_recv(c.tls, buf, sizeof buf) : rd_net_recv(c.sock, buf, sizeof buf);
         if (n < 0) {
             close_conn(c, "connection closed");
             return;
@@ -372,9 +391,10 @@ void Server::read_conn(Conn &c) {
 }
 
 void Server::flush(Conn &c) {
-    if (c.tcp_pending) return;
+    if (c.tcp_pending || c.tls_handshaking) return;
     while (c.pending()) {
-        long n = rd_net_send(c.sock, c.out.data + c.out_off, c.pending());
+        long n = c.tls ? rd_tls_send(c.tls, c.out.data + c.out_off, c.pending())
+                       : rd_net_send(c.sock, c.out.data + c.out_off, c.pending());
         if (n < 0) {
             close_conn(c, "send failed");
             return;
