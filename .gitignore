@@ -1,0 +1,5 @@
+build/
+build-web/
+._*
+.DS_Store
+*.bmp

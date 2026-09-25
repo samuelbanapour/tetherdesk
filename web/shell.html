@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TetherDesk</title>
+<meta name="color-scheme" content="dark">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1117; overflow: hidden; }
+  #canvas { display: block; width: 100vw; height: 100vh; outline: none; cursor: default; }
+  #status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+            color: #8b95a7; font: 15px system-ui, sans-serif; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+<div id="status">Loading TetherDesk&hellip;</div>
+<script>
+  // The viewer itself is C++ compiled to WebAssembly; this only hands it the
+  // address of the host that served the page (plus any #password=&name= hash).
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    arguments: [location.hostname, location.port || (location.protocol === 'https:' ? '443' : '80'), location.hash],
+    onRuntimeInitialized: function () { document.getElementById('status').remove(); Module.canvas.focus(); },
+    print: function (t) { console.log(t); },
+    printErr: function (t) { console.warn(t); }
+  };
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>
