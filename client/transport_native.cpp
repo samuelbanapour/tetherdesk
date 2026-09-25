@@ -70,13 +70,14 @@ public:
                     rd_net_close(sock_);
                     sock_ = RD_INVALID_SOCKET;
                     attempt_++;
-                    if (!open_socket(true))
-                        return fail("could not connect (error " + std::to_string(e) + ") - is the host running?");
+                    if (!open_socket(true)) return fail(connect_error(e));
                     return;
                 }
                 tcp_up_ = true;
             } else {
-                if (rd_now_us() - started_us_ > 10000000) fail("connection timed out");
+                if (rd_now_us() - started_us_ > 10000000)
+                    fail("No answer from " + host_ + " - check the address, and that this computer can reach it "
+                         "(same network, port forwarding or a VPN)");
                 return;
             }
         }
@@ -125,6 +126,21 @@ public:
     }
 
 private:
+    std::string connect_error(int e) const {
+        const bool refused = e == 61 || e == 111 || e == 10061;  // ECONNREFUSED on macOS / Linux / Windows
+        const bool local = host_ == "localhost" || host_ == "127.0.0.1" || host_ == "::1";
+        if (refused && local)
+            return "Nothing is sharing on this computer. \"localhost\" means this computer - use the address "
+                   "shown in Share this PC on the other computer.";
+        if (refused)
+            return "Nothing is sharing at " + host_ + ". On that computer, open TetherDesk and turn on Share this PC.";
+        if (e == 60 || e == 110 || e == 10060)  // ETIMEDOUT
+            return "No answer from " + host_ + " - check the address and your network.";
+        if (e == 65 || e == 113 || e == 51 || e == 101 || e == 10065 || e == 10051)  // unreachable
+            return "Can't reach " + host_ + " from this network.";
+        return "Could not connect to " + host_ + " (error " + std::to_string(e) + ")";
+    }
+
     // Opens a socket to the current address attempt, skipping addresses that
     // fail immediately. `quiet` keeps the original error if all fail.
     bool open_socket(bool quiet = false) {

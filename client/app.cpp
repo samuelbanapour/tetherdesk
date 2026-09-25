@@ -1482,7 +1482,7 @@ void App::draw_dialog() {
         break;
     }
     case Dialog::Connecting: {
-        Rect c = dialog_frame(440, 200, (dialog_error_.empty() ? "Connecting to " : "Couldn't connect to ") +
+        Rect c = dialog_frame(480, 220, (dialog_error_.empty() ? "Connecting to " : "Couldn't connect to ") +
                                             (target_.label.empty() ? target_.host : target_.label));
         if (dialog_error_.empty()) {
             uint32_t dots = (SDL_GetTicks() / 400) % 4;
@@ -1491,9 +1491,21 @@ void App::draw_dialog() {
             ui_.text(c.x, c.y + 28, "Encrypted with X25519 + ChaCha20-Poly1305", theme::dim);
             if (ui_.button({c.x + c.w - 110, c.y + 72, 110, 36}, "Cancel") || cancel_) disconnect_user();
         } else {
-            ui_.text(c.x, c.y + 4, ellipsize(ui_, dialog_error_, c.w), theme::bad);
-            bool retry = ui_.button({c.x + c.w - 110, c.y + 72, 110, 36}, "Retry", true) || submit_;
-            if (ui_.button({c.x + c.w - 230, c.y + 72, 110, 36}, "Close") || cancel_) dialog_ = Dialog::None;
+            // Word-wrap the error over up to three lines.
+            std::string rest = dialog_error_;
+            float ly = c.y + 4;
+            for (int line = 0; line < 3 && !rest.empty(); line++) {
+                size_t cut = rest.size();
+                while (cut > 0 && ui_.text_width(rest.substr(0, cut)) > c.w) {
+                    size_t sp = rest.rfind(' ', cut - 1);
+                    cut = (sp == std::string::npos || sp == 0) ? cut - 1 : sp;
+                }
+                ui_.text(c.x, ly, line == 2 ? ellipsize(ui_, rest, c.w) : rest.substr(0, cut), theme::bad);
+                rest = rest.substr(std::min(rest.size(), cut + 1));
+                ly += 20;
+            }
+            bool retry = ui_.button({c.x + c.w - 110, c.y + 92, 110, 36}, "Retry", true) || submit_;
+            if (ui_.button({c.x + c.w - 230, c.y + 92, 110, 36}, "Close") || cancel_) dialog_ = Dialog::None;
             else if (retry) begin_connect(target_);
         }
         break;

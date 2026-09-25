@@ -77,7 +77,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'macOS'
         shell: bash
         run: |
-          ./packaging/macos/make_dmg.sh "${GITHUB_REF_NAME#v}"
+          bash ./packaging/macos/make_dmg.sh "${GITHUB_REF_NAME#v}"
           echo "ASSET=$(ls dist/*.dmg)" >> "$GITHUB_ENV"
 
       - name: Package (Windows installer)
