@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "edition.h"
 #include "host_process.h"
 
 #if defined(__APPLE__)
@@ -21,7 +22,7 @@ namespace td {
 
 #if defined(__APPLE__)
 
-static const char *kLabel = "com.soloappsstudio.tetherdesk.host";
+static const char *kLabel = edition::service_label;
 
 static std::string plist_path() {
     const char *home = std::getenv("HOME");
@@ -114,10 +115,10 @@ void service_restart() { launchctl({"kickstart", "-k", domain() + "/" + kLabel})
 #elif defined(_WIN32)
 
 static const wchar_t *kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-static const wchar_t *kRunValue = L"TetherDesk Always On";
-static const wchar_t *kMutex = L"Local\\TetherDeskHostService";
-static const wchar_t *kStopEvent = L"Local\\TetherDeskHostServiceStop";
-static const wchar_t *kRestartEvent = L"Local\\TetherDeskHostServiceRestart";
+static const wchar_t *kRunValue = edition::service_run_value;
+static const wchar_t *kMutex = edition::service_mutex;
+static const wchar_t *kStopEvent = edition::service_stop_event;
+static const wchar_t *kRestartEvent = edition::service_restart_event;
 
 static std::wstring widen(const std::string &s) {
     int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);

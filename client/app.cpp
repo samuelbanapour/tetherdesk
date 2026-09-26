@@ -287,7 +287,7 @@ void App::disconnect_user() {
         if (u.file) std::fclose(u.file);
     uploads_.clear();
     set_fullscreen(false);
-    SDL_SetWindowTitle(win_, "TetherDesk");
+    SDL_SetWindowTitle(win_, edition::name);
     SDL_StartTextInput();
 }
 
@@ -315,7 +315,7 @@ void App::on_transport_closed() {
         set_fullscreen(false);
     }
     menu_open_ = chat_open_ = false;
-    SDL_SetWindowTitle(win_, "TetherDesk");
+    SDL_SetWindowTitle(win_, edition::name);
     SDL_StartTextInput();
     if (!user_closed_) fail_connect(why.empty() ? "Disconnected" : why);
 }
@@ -451,7 +451,7 @@ void App::handle_message(std::vector<uint8_t> &m) {
                     if (target_.fullscreen) set_fullscreen(true);
                 }
             }
-            SDL_SetWindowTitle(win_, ("TetherDesk - " + (target_.label.empty() ? host_name_ : target_.label)).c_str());
+            SDL_SetWindowTitle(win_, (std::string(edition::name) + " - " + (target_.label.empty() ? host_name_ : target_.label)).c_str());
         } else {
             toast(text, vo ? theme::warn : theme::good);
             if (vo) release_input();
@@ -904,7 +904,7 @@ void App::handle_session_event(const SDL_Event &e) {
             if (down && displays_.size() > 1) switch_screen((cur_display_ + 1) % int(displays_.size()));
             return;
         }
-        if (k == SDLK_F9) {
+        if (k == SDLK_F9 && !edition::remote) {
             if (down) {
                 release_input();
                 chat_open_ = true;
@@ -1104,18 +1104,22 @@ void App::draw_home() {
     ui_.fill({0, 0, W, 72}, {17, 21, 28});
     ui_.fill({0, 72, W, 1}, theme::panel_border);
     draw_logo(ui_, pad, 16, 1);
-    ui_.text(pad + 46, 16, "TetherDesk", theme::text, 1.45f);
-    ui_.text(pad + 46, 42, "Remote Desktop", theme::dim);
+    ui_.text(pad + 46, 16, edition::name, theme::text, 1.45f);
+    ui_.text(pad + 46, 42, edition::tagline, theme::dim);
     if (opts_.quick_support) {
         draw_share(96);
         return;
     }
     // Tabs, Remote Desktop style: connect out, or let others connect in.
     {
-        const float tw = 150, tx = std::max(pad + 230, W / 2 - tw);
-        if (ui_.button({tx, 20, tw - 4, 34}, "Connect to a PC", tab_ == HomeTab::Connect) && !modal)
+        const float tw = 150, tx = std::max(pad + 76 + ui_.text_width(edition::name, 1.45f), W / 2 - tw);
+        if (ui_.button({tx, 20, tw - 4, 34}, edition::remote ? "My computers" : "Connect to a PC",
+                       tab_ == HomeTab::Connect) &&
+            !modal)
             tab_ = HomeTab::Connect;
-        std::string share_label = sharing_ ? "Share this PC  (on)" : "Share this PC";
+        std::string share_label = edition::remote ? (sharing_ ? "This computer  (on)" : "This computer")
+                                  : sharing_      ? "Share this PC  (on)"
+                                                  : "Share this PC";
         if (ui_.button({tx + tw, 20, tw + 20, 34}, share_label, tab_ == HomeTab::Share) && !modal) tab_ = HomeTab::Share;
     }
     if (tab_ == HomeTab::Share) {
@@ -1286,14 +1290,34 @@ bool App::write_password_file() {
 std::vector<std::string> App::host_args() {
     std::vector<std::string> args = {"--run-host", "--password-file", store_.dir() + "share_password",
                                      "--no-console", "--relay", opts_.relay};
+    if (edition::remote) {
+        // Its own identity and computer ID, separate from TetherDesk's.
+        args.push_back("--key-file");
+        args.push_back(store_.dir() + "host_key");
+        if (opts_.share_demo) args.push_back("--demo");
+        return args;
+    }
     if (store_.share_view_only) args.push_back("--view-only");
     if (store_.share_demo || opts_.share_demo) args.push_back("--demo");
     return args;
 }
 
+void App::open_set_password(bool then_start) {
+    new_pw_.clear();
+    new_pw2_.clear();
+    new_pw_then_start_ = then_start;
+    dialog_error_.clear();
+    dialog_ = Dialog::SetPassword;
+    focus_ = 0;
+}
+
 void App::start_sharing() {
 #ifndef __EMSCRIPTEN__
     if (store_.share_password.empty()) {
+        if (edition::remote) {  // you choose this computer's password yourself
+            open_set_password(true);
+            return;
+        }
         store_.share_password = random_share_password();
         store_.save();
     }
@@ -1399,11 +1423,16 @@ void App::draw_share(float top) {
     float y = top + 8;
     const bool qs = opts_.quick_support;
 
-    ui_.text(x, y, qs ? "Get help with this computer" : "Share this PC", theme::text, 1.3f);
+    const bool remote = edition::remote;
+    ui_.text(x, y,
+             qs ? "Get help with this computer" : remote ? "Remote access to this computer" : "Share this PC",
+             theme::text, 1.3f);
     y += 34;
     ui_.text(x, y,
              qs ? "Tell the person helping you the ID and password below. Close this app to end the session."
-                : "Let someone connect to this computer from anywhere - with the TetherDesk app or a web browser.",
+             : remote
+                 ? "Turn this on to reach this computer from your other devices - with TetherDesk Remote or a browser."
+                 : "Let someone connect to this computer from anywhere - with the TetherDesk app or a web browser.",
              theme::dim);
     y += 36;
 
@@ -1412,7 +1441,7 @@ void App::draw_share(float top) {
     ui_.fill(sw, sharing_ ? theme::good : theme::button, 16);
     ui_.fill({sharing_ ? sw.x + 36 : sw.x + 4, sw.y + 4, 24, 24}, theme::text, 12);
     const bool starting = sharing_ && share_identity_.empty();
-    std::string status = !sharing_ ? "Off - nobody can connect"
+    std::string status = !sharing_ ? (remote ? "Off - remote access is turned off" : "Off - nobody can connect")
                          : starting ? "Starting..."
                          : share_relay_online_ ? (service_installed() ? "Always on - reachable from anywhere"
                                                                       : "On - reachable from anywhere")
@@ -1435,13 +1464,19 @@ void App::draw_share(float top) {
         ui_.fill(box, {60, 45, 15, 200}, 10);
         float yy = y + 12;
         if (share_needs_screen_perm_) {
-            ui_.text(x + 14, yy, "Allow Screen Recording for TetherDesk, then turn sharing off and on.", theme::warn);
+            ui_.text(x + 14, yy,
+                     std::string("Allow Screen Recording for ") + edition::name + ", then turn " +
+                         (remote ? "remote access" : "sharing") + " off and on.",
+                     theme::warn);
             if (ui_.button({x + cw - 190, yy - 4, 176, 28}, "Open Screen Recording"))
                 SDL_OpenURL("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture");
             yy += 40;
         }
         if (share_needs_input_perm_) {
-            ui_.text(x + 14, yy, "Allow Accessibility so the helper can use the mouse and keyboard.", theme::warn);
+            ui_.text(x + 14, yy,
+                     remote ? "Allow Accessibility so you can use the mouse and keyboard remotely."
+                            : "Allow Accessibility so the helper can use the mouse and keyboard.",
+                     theme::warn);
             if (ui_.button({x + cw - 190, yy - 4, 176, 28}, "Open Accessibility"))
                 SDL_OpenURL("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
         }
@@ -1453,17 +1488,21 @@ void App::draw_share(float top) {
     ui_.fill(card, theme::panel, 12);
     ui_.outline(card, theme::panel_border, 12);
     const float half = (cw - 36) / 2;
-    ui_.text(x + 18, y + 16, "Your ID", theme::dim);
+    ui_.text(x + 18, y + 16, remote ? "This computer's ID" : "Your ID", theme::dim);
     ui_.text(x + 18, y + 40, sharing_ && !share_id_.empty() ? pretty_id(share_id_) : "--- --- ---",
              share_relay_online_ ? theme::text : theme::dim, 2.0f);
     ui_.text(x + 18 + half, y + 16, "Password", theme::dim);
-    std::string pw = store_.share_password.empty() ? "(appears when on)"
+    std::string pw = store_.share_password.empty() ? (remote ? "(not set yet)" : "(appears when on)")
                      : share_show_pw_ || qs        ? store_.share_password
                                                    : std::string(11, '*');
     ui_.text(x + 18 + half, y + 40, pw, theme::text, qs ? 2.0f : 1.6f);
     if (!qs && ui_.button({x + 18 + half, y + 104, 80, 28}, share_show_pw_ ? "Hide" : "Show"))
         share_show_pw_ = !share_show_pw_;
-    if (ui_.button({x + 18 + half + (qs ? 0 : 88), y + 104, 124, 28}, "New password")) {
+    if (remote) {
+        if (ui_.button({x + 18 + half + 88, y + 104, 150, 28},
+                       store_.share_password.empty() ? "Set password" : "Change password"))
+            open_set_password(false);
+    } else if (ui_.button({x + 18 + half + (qs ? 0 : 88), y + 104, 124, 28}, "New password")) {
         store_.share_password = random_share_password();
         store_.save();
         share_show_pw_ = true;
@@ -1484,14 +1523,31 @@ void App::draw_share(float top) {
         size_t colon = lan.rfind(':');
         if (colon != std::string::npos && lan.substr(colon + 1) == "5980") lan = lan.substr(0, colon);
     }
-    ui_.text(x, y, "The helper can connect with the TetherDesk app, or in any web browser at", theme::dim);
+    ui_.text(x, y,
+             remote ? "Connect from your other devices with TetherDesk Remote, or in any web browser at"
+                    : "The helper can connect with the TetherDesk app, or in any web browser at",
+             theme::dim);
     y += 22;
     ui_.text(x, y, "https://" + (share_relay_.empty() ? opts_.relay : share_relay_) + "/", theme::accent_hover, 1.1f);
     y += 28;
-    ui_.text(x, y, "On the same network they can also use this computer's address: " + lan, theme::dim);
+    ui_.text(x, y,
+             std::string(remote ? "On the same network you can also use this computer's address: "
+                                : "On the same network they can also use this computer's address: ") +
+                 lan,
+             theme::dim);
     y += 36;
 
-    if (!qs) {
+    if (remote) {
+        bool always = store_.share_always_on;
+        if (service_supported() &&
+            ui_.checkbox(x, y, "Always on - stay reachable when this app is closed and after a restart", always)) {
+            store_.share_always_on = always;
+            store_.save();
+            if (always && !sharing_) start_sharing();
+            else restart_sharing();
+        }
+        y += service_supported() ? 42.f : 0.f;
+    } else if (!qs) {
         // Options (take effect the next time sharing starts).
         bool vo = store_.share_view_only, demo = store_.share_demo, always = store_.share_always_on;
         bool changed = false;
@@ -1514,7 +1570,8 @@ void App::draw_share(float top) {
 
     ui_.text(x, y, "Activity", theme::dim);
     y += 24;
-    if (share_activity_.empty()) ui_.text(x, y, sharing_ ? "Nobody has connected yet" : "-", theme::dim);
+    if (share_activity_.empty())
+        ui_.text(x, y, sharing_ ? (remote ? "No connections yet" : "Nobody has connected yet") : "-", theme::dim);
     for (auto &a : share_activity_) {
         ui_.text(x, y, ellipsize(ui_, a, cw), theme::text);
         y += 20;
@@ -1714,6 +1771,39 @@ void App::draw_dialog() {
         }
         break;
     }
+    case Dialog::SetPassword: {
+        Rect c = dialog_frame(460, 330, "Password for this computer");
+        ui_.text(c.x, c.y - 10, "You'll type it when you connect from your other devices.", theme::dim);
+        float y = c.y + 40;
+        form_field({c.x, y, c.w, 36}, "New password (at least 8 characters)", new_pw_, true);
+        y += 62;
+        form_field({c.x, y, c.w, 36}, "Type it again", new_pw2_, true);
+        y += 50;
+        if (!dialog_error_.empty()) ui_.text(c.x, y, dialog_error_, theme::bad);
+        y += 28;
+        bool save = ui_.button({c.x + c.w - 110, y, 110, 36}, "Save", true) || submit_;
+        if (ui_.button({c.x + c.w - 230, y, 110, 36}, "Cancel") || cancel_) {
+            dialog_ = Dialog::None;
+        } else if (save) {
+            if (new_pw_.size() < edition::min_password) dialog_error_ = "Use at least 8 characters";
+            else if (new_pw_ != new_pw2_) dialog_error_ = "The two passwords don't match";
+            else {
+                store_.share_password = new_pw_;
+                store_.save();
+                new_pw_.clear();
+                new_pw2_.clear();
+                dialog_ = Dialog::None;
+                if (sharing_) {  // restart so the new password takes effect
+                    write_password_file();
+                    if (service_installed()) service_restart();
+                    else restart_sharing();
+                } else if (new_pw_then_start_) {
+                    start_sharing();
+                }
+            }
+        }
+        break;
+    }
     case Dialog::None: break;
     }
 }
@@ -1908,12 +1998,13 @@ void App::draw_menu() {
     row_label("Actions");
     {
         const float bw = (bw_avail - 12) / 3;
-        if (ui_.button({bx, y, bw, 28}, "Ctrl+Alt+Del", false, !view_only_)) {
+        const float bw2 = edition::remote ? (bw_avail - 6) / 2 : bw;  // no chat in Remote
+        if (ui_.button({bx, y, bw2, 28}, "Ctrl+Alt+Del", false, !view_only_)) {
             for (uint16_t k : {RD_HID_LCTRL, RD_HID_LALT, RD_HID_DELETE}) send_key(k, true);
             for (uint16_t k : {RD_HID_DELETE, RD_HID_LALT, RD_HID_LCTRL}) send_key(k, false);
         }
-        if (ui_.button({bx + bw + 6, y, bw, 28}, "Refresh")) send_simple(RD_C_REFRESH);
-        if (ui_.button({bx + 2 * (bw + 6), y, bw, 28}, "Chat  (F9)")) {
+        if (ui_.button({bx + bw2 + 6, y, bw2, 28}, "Refresh")) send_simple(RD_C_REFRESH);
+        if (!edition::remote && ui_.button({bx + 2 * (bw + 6), y, bw, 28}, "Chat  (F9)")) {
             release_input();
             chat_open_ = true;
             menu_open_ = false;

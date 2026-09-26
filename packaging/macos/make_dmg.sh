@@ -59,3 +59,22 @@ rm -f "$qs"
 (cd "$qs_stage" && ditto -c -k --keepParent "TetherDesk QuickSupport.app" "$OLDPWD/$qs")
 rm -rf "$qs_stage"
 echo "built $qs"
+
+# TetherDesk Remote: the app for reaching your own computers (no support
+# features). A .dmg like TetherDesk: it belongs in Applications, since
+# "Always on" starts it from there.
+rm_app=build-release/TetherDeskRemote.app
+if [ -d "$app/Contents/Resources/web" ]; then
+  mkdir -p "$rm_app/Contents/Resources/web"
+  cp "$app"/Contents/Resources/web/index.* "$rm_app/Contents/Resources/web/"
+fi
+find "$rm_app" -name '._*' -delete
+bash "$(dirname "$0")/sign.sh" "$rm_app"
+rm_stage="$(mktemp -d)"
+ditto "$rm_app" "$rm_stage/TetherDesk Remote.app"
+ln -s /Applications "$rm_stage/Applications"
+rm_out="dist/TetherDesk-Remote-macOS.dmg"
+rm -f "$rm_out"
+hdiutil create -volname "TetherDesk Remote" -srcfolder "$rm_stage" -ov -format UDZO "$rm_out" >/dev/null
+rm -rf "$rm_stage"
+echo "built $rm_out"

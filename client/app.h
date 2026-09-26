@@ -58,7 +58,7 @@ public:
 private:
     enum class Screen { Home, Session };
     enum class Phase { None, Connecting, Hello, Verify, Auth, Live };
-    enum class Dialog { None, EditPc, Password, Verify, Connecting };
+    enum class Dialog { None, EditPc, Password, Verify, Connecting, SetPassword };
     enum class ScaleMode { Fit, Native };
     enum class HomeTab { Connect, Share };
 
@@ -136,6 +136,7 @@ private:
     void restart_sharing();
     void draw_web_connect();
     void draw_dialog();
+    void open_set_password(bool then_start);
     void draw_session();
     void draw_connection_bar();
     void draw_menu();
@@ -168,6 +169,9 @@ private:
     std::vector<Field> last_form_;  // fields drawn last frame (receive keystrokes)
     int focus_ = 0;
     bool submit_ = false, cancel_ = false;
+    // TetherDesk Remote: choosing this computer's own password.
+    std::string new_pw_, new_pw2_;
+    bool new_pw_then_start_ = false;
     std::string quick_host_;
     SavedPc edit_;
     std::string edit_port_;

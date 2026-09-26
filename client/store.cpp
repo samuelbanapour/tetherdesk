@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #endif
 
+#include "edition.h"
 #include "rd_crypto.h"
 
 namespace td {
@@ -65,7 +66,7 @@ void Store::load() {
     if (const char *override_dir = std::getenv("TETHERDESK_DATA_DIR"); override_dir && *override_dir) {
         dir_ = override_dir;
         if (dir_.back() != '/' && dir_.back() != '\\') dir_ += '/';
-    } else if (char *p = SDL_GetPrefPath("TetherDesk", "TetherDesk")) {
+    } else if (char *p = SDL_GetPrefPath("TetherDesk", edition::data_folder)) {
         dir_ = p;
         SDL_free(p);
     }

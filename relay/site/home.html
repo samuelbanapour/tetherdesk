@@ -113,6 +113,18 @@
     border-radius: var(--radius); padding: 22px 24px; }
   .helper p { margin: 4px 0 0; color: var(--muted); }
 
+  /* Which app? comparison */
+  .apps { display: grid; gap: 16px; grid-template-columns: repeat(3, 1fr); margin-bottom: 28px; }
+  .apps .card h3 { margin-top: 0; }
+  .apps .for { color: var(--accent-2); font-size: 14px; margin: 0 0 8px; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); }
+  table.compare { width: 100%; border-collapse: collapse; font-size: 15px; min-width: 620px; }
+  .compare th, .compare td { padding: 13px 16px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .compare thead th { font-size: 15px; background: var(--panel-2); }
+  .compare tbody th { font-weight: 500; color: var(--muted); width: 34%; }
+  .compare tr:last-child th, .compare tr:last-child td { border-bottom: 0; }
+  .compare .yes { color: var(--good); font-weight: 600; }
+  .compare .no { color: var(--faint); }
   .security { display: grid; gap: 16px; grid-template-columns: repeat(2, 1fr); }
 
   details { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 0 20px; margin: 0 0 10px; }
@@ -130,6 +142,7 @@
 
   @media (max-width: 900px) {
     .grid, .steps, .downloads { grid-template-columns: 1fr 1fr; }
+    .apps { grid-template-columns: 1fr; }
     .split, .split.rev { grid-template-columns: 1fr; gap: 28px; }
     .split.rev .shot { order: -1; }
   }
@@ -152,6 +165,7 @@
       <a href="#features">Features</a>
       <a href="#how">How it works</a>
       <a href="#security">Security</a>
+      <a href="#compare">Which app?</a>
       <a href="#download">Download</a>
       <a href="#support">QuickSupport</a>
       <a href="#faq">FAQ</a>
@@ -279,6 +293,37 @@
     </div>
   </section>
 
+  <section id="compare">
+    <div class="wrap">
+      <div class="center">
+        <h2>Which app do I need?</h2>
+        <p class="sub">They all use the same fast, encrypted connection. The difference is who they're for.</p>
+      </div>
+      <div class="apps">
+        <div class="card"><h3>TetherDesk</h3><p class="for">Your computers + helping people</p><p>The full app. Reach your own computers, share this one, and help friends and family — with chat and view-only sharing.</p></div>
+        <div class="card"><h3>TetherDesk Remote</h3><p class="for">Just your own computers</p><p>Plain remote desktop, nothing else. Give each computer your own password, keep it always on, and connect from anywhere.</p></div>
+        <div class="card"><h3>QuickSupport</h3><p class="for">The person getting help</p><p>A tiny app that doesn't install. Open it, read out the ID and one-time password, close it when you're done.</p></div>
+      </div>
+      <div class="table-wrap">
+        <table class="compare">
+          <thead><tr><th></th><th>TetherDesk</th><th>TetherDesk Remote</th><th>QuickSupport</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Connect to your other computers</th><td><span class="yes">✓</span></td><td><span class="yes">✓</span></td><td><span class="no">—</span></td></tr>
+            <tr><th scope="row">Let this computer be reached from anywhere</th><td><span class="yes">✓</span></td><td><span class="yes">✓</span></td><td><span class="yes">✓</span> while it's open</td></tr>
+            <tr><th scope="row">Always on — reachable even when the app is closed, after restarts</th><td><span class="yes">✓</span> optional</td><td><span class="yes">✓</span> on by default</td><td><span class="no">—</span></td></tr>
+            <tr><th scope="row">Password</th><td>Generated for you (or make a new one)</td><td>One you choose (8+ characters)</td><td>New one-time password every session</td></tr>
+            <tr><th scope="row">Saved computers with previews</th><td><span class="yes">✓</span></td><td><span class="yes">✓</span></td><td><span class="no">—</span></td></tr>
+            <tr><th scope="row">Several monitors, clipboard, sending files</th><td><span class="yes">✓</span></td><td><span class="yes">✓</span></td><td>Monitors &amp; clipboard</td></tr>
+            <tr><th scope="row">Chat with the person on the other side</th><td><span class="yes">✓</span></td><td><span class="no">—</span></td><td><span class="no">—</span></td></tr>
+            <tr><th scope="row">View-only sharing, demo desktop</th><td><span class="yes">✓</span></td><td><span class="no">—</span></td><td><span class="no">—</span></td></tr>
+            <tr><th scope="row">Installs on the computer</th><td>Yes</td><td>Yes</td><td>No — runs from the download</td></tr>
+            <tr><th scope="row">End-to-end encrypted, no port forwarding or VPN</th><td><span class="yes">✓</span></td><td><span class="yes">✓</span></td><td><span class="yes">✓</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <section id="download">
     <div class="wrap">
       <div class="center">
@@ -303,6 +348,13 @@
         </div>
       </div>
       <div class="helper">
+        <div><b>Only want to reach your own computers?</b><p>Get TetherDesk Remote — plain remote desktop with your own password and Always on, and no support features.</p></div>
+        <div class="cta">
+          <a class="btn btn-primary" href="https://github.com/samuelbanapour/tetherdesk/releases/latest/download/TetherDesk-Remote-macOS.dmg">Remote for Mac</a>
+          <a class="btn btn-primary" href="https://github.com/samuelbanapour/tetherdesk/releases/latest/download/TetherDesk-Remote-Setup.exe">Remote for Windows</a>
+        </div>
+      </div>
+      <div class="helper">
         <div><b>Receiving help from someone?</b><p>Get the small QuickSupport app instead — open it and read them the ID and password. Nothing is installed.</p></div>
         <a class="btn btn-primary" href="/get">Get QuickSupport</a>
       </div>
@@ -315,6 +367,8 @@
       <div class="faq">
         <details><summary>How do I reach my computer when I'm away?</summary>
           <p>Install TetherDesk on it, open <b>Share this PC</b> and tick <b>Always on</b>. It stays reachable by its ID, starts sharing when it boots, and restarts sharing automatically if anything goes wrong. Then connect by that ID from the app or any browser.</p></details>
+        <details><summary>What's the difference between TetherDesk and TetherDesk Remote?</summary>
+          <p>TetherDesk Remote is TetherDesk with the support features taken out: no chat, no view-only or demo sharing, and no generated passwords — you pick one password per computer and it stays on. Use it if you only ever connect to your own computers. <a href="#compare">See the full comparison</a>. The two can be installed side by side; each has its own computer ID.</p></details>
         <details><summary>Do I need port forwarding, a VPN, or router changes?</summary>
           <p>No. Both computers connect outwards to the TetherDesk relay, which pairs them by ID. It works behind home routers, most firewalls and mobile hotspots.</p></details>
         <details><summary>Can the relay see my screen?</summary>

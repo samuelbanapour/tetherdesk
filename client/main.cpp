@@ -105,7 +105,7 @@ int main(int argc, char **argv) {
         else if (a == "--trust") opts.trust_new_hosts = true;
         else if (a == "--share") opts.start_sharing = true;
         else if (a == "--share-demo") opts.start_sharing = opts.share_demo = true;
-        else if (a == "--quick-support") opts.quick_support = true;
+        else if (a == "--quick-support") opts.quick_support = !td::edition::remote;  // not in Remote
         else if (a == "--relay") opts.relay = next();
         else if (a == "--screenshot") opts.screenshot_path = next();
         else if (a == "--after") opts.screenshot_after = std::atof(next().c_str());
@@ -165,7 +165,7 @@ int main(int argc, char **argv) {
 #endif
     Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
     if (opts.fullscreen) flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
-    SDL_Window *win = SDL_CreateWindow("TetherDesk", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, flags);
+    SDL_Window *win = SDL_CreateWindow(td::edition::name, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, flags);
     if (!win) {
         std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 1;

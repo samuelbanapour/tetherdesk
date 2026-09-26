@@ -12,8 +12,9 @@
 # Artifacts:
 #   web      the browser viewer (index.html/js/wasm), shared by the others
 #   linux    TetherDesk-linux-x64.zip (app, host, probe, relay bundle + website)
-#   windows  TetherDesk-Setup.exe, TetherDesk-QuickSupport.exe
-#   macos    TetherDesk-macOS.dmg, TetherDesk-QuickSupport-macOS.zip (Universal)
+#   windows  TetherDesk-Setup.exe, TetherDesk-Remote-Setup.exe, TetherDesk-QuickSupport.exe
+#   macos    TetherDesk-macOS.dmg, TetherDesk-Remote-macOS.dmg,
+#            TetherDesk-QuickSupport-macOS.zip (all Universal)
 
 trigger:
   batch: true
@@ -104,7 +105,15 @@ stages:
               "$iscc" -Q "-DAppVersion=1.0.0" "-DStageDir=$(cygpath -w "$stage")" \
                   "-O$(cygpath -w "$(Agent.TempDirectory)/setup")" packaging/windows/tetherdesk.iss
               cp "$(Agent.TempDirectory)"/setup/TetherDesk-Setup-*.exe "$out/TetherDesk-Setup.exe"
-            displayName: Package installer + QuickSupport
+              # TetherDesk Remote: its own installer (reach your own computers).
+              rstage="$(Agent.TempDirectory)/stage-remote"
+              mkdir -p "$rstage/web"
+              cp build/Release/TetherDesk-Remote.exe README.md "$rstage/"
+              cp "$(Pipeline.Workspace)"/web/index.* "$rstage/web/"
+              "$iscc" -Q "-DAppVersion=1.0.0" "-DStageDir=$(cygpath -w "$rstage")" \
+                  "-O$(cygpath -w "$(Agent.TempDirectory)/setup")" packaging/windows/tetherdesk-remote.iss
+              cp "$(Agent.TempDirectory)"/setup/TetherDesk-Remote-Setup-*.exe "$out/TetherDesk-Remote-Setup.exe"
+            displayName: Package installers + QuickSupport
           - publish: $(Build.ArtifactStagingDirectory)/windows
             artifact: windows
 
@@ -125,8 +134,8 @@ stages:
               out="$(Build.ArtifactStagingDirectory)/macos"
               mkdir -p "$out"
               cp dist/TetherDesk-*-macOS.dmg "$out/TetherDesk-macOS.dmg"
-              cp dist/TetherDesk-QuickSupport-macOS.zip "$out/"
+              cp dist/TetherDesk-QuickSupport-macOS.zip dist/TetherDesk-Remote-macOS.dmg "$out/"
               lipo -archs build-release/TetherDesk.app/Contents/MacOS/TetherDesk
-            displayName: Package DMG + QuickSupport
+            displayName: Package DMGs + QuickSupport
           - publish: $(Build.ArtifactStagingDirectory)/macos
             artifact: macos

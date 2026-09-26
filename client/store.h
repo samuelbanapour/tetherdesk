@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "edition.h"
+
 namespace td {
 
 struct SavedPc {
@@ -45,7 +47,7 @@ public:
     std::string share_password;
     bool share_view_only = false;
     bool share_demo = false;
-    bool share_always_on = false;  // background service, starts at login
+    bool share_always_on = edition::remote;  // background service, starts at login
 
 private:
     std::string dir_;

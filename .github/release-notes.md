@@ -2,6 +2,7 @@
 
 - **Mac** (macOS 12.3+, Apple Silicon): `TetherDesk-macOS.dmg`. Open it and drag TetherDesk to Applications. The first time, right-click the app and choose **Open**.
 - **Windows** (10 / 11, 64-bit): `TetherDesk-Setup.exe`. If SmartScreen warns, choose **More info → Run anyway**.
+- **TetherDesk Remote** (`TetherDesk-Remote-macOS.dmg` / `TetherDesk-Remote-Setup.exe`): just remote desktop for your own computers. Set your own password on each computer, keep it Always on, and connect from anywhere. No support features.
 - **QuickSupport** (`TetherDesk-QuickSupport.exe` / `TetherDesk-QuickSupport-macOS.zip`): nothing to install. The person who needs help runs it and reads out the ID and password.
 - **Linux** (x64, X11): `TetherDesk-linux-x64.zip` (needs libsdl2, libx11, libxtst).
 

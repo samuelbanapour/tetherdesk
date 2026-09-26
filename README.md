@@ -34,6 +34,7 @@ Download from the [Releases page](../../releases):
 - **macOS 12.3+:** `TetherDesk-macOS.dmg`. Open it and drag TetherDesk to Applications. The app isn't notarized, so the first time you open it, right-click it and choose **Open**. After each update, macOS asks you to allow Screen Recording and Accessibility again. Keeping those approvals across updates needs an Apple Developer ID certificate; `packaging/macos/sign.sh` supports one. Free self-signed certificates don't work: current macOS refuses permissions to them entirely.
 - **Windows 10/11:** `TetherDesk-Setup.exe`. SmartScreen may warn about an unknown publisher; choose **More info → Run anyway**.
 - **Linux (X11):** `TetherDesk-linux-x64.zip`, containing the binaries.
+- **TetherDesk Remote** (`TetherDesk-Remote-macOS.dmg`, `TetherDesk-Remote-Setup.exe`): the same app with the support features removed, for people who only reach their own computers. It has no chat, view-only or demo sharing, and no generated passwords. You choose each computer's password (8+ characters), and Always on is on by default. It is built from the same sources with `TD_EDITION_REMOTE` (see `client/edition.h`), and keeps its own settings, computer ID and background service, so it can sit next to TetherDesk.
 
 There is a single release (`v1.0.0`). CI replaces its files on every push to `main`, so the download links always get the newest build.
 

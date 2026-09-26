@@ -119,7 +119,7 @@ jobs:
           bash ./packaging/macos/make_dmg.sh
           mkdir -p upload
           cp dist/TetherDesk-*-macOS.dmg upload/TetherDesk-macOS.dmg
-          cp dist/TetherDesk-QuickSupport-macOS.zip upload/
+          cp dist/TetherDesk-QuickSupport-macOS.zip dist/TetherDesk-Remote-macOS.dmg upload/
 
       - name: Package (Windows installer)
         if: github.event_name != 'pull_request' && runner.os == 'Windows'
@@ -138,6 +138,13 @@ jobs:
               "-O$(cygpath -w "$PWD/dist")" packaging/windows/tetherdesk.iss
           mkdir -p upload
           cp dist/TetherDesk-Setup-*.exe upload/TetherDesk-Setup.exe
+          rstage="$RUNNER_TEMP/stage-remote"
+          mkdir -p "$rstage/web"
+          cp build/Release/TetherDesk-Remote.exe README.md "$rstage/"
+          cp build-web/index.html build-web/index.js build-web/index.wasm "$rstage/web/"
+          "$iscc" -Q "-DAppVersion=1.0.0" "-DStageDir=$(cygpath -w "$rstage")" \
+              "-O$(cygpath -w "$PWD/dist")" packaging/windows/tetherdesk-remote.iss
+          cp dist/TetherDesk-Remote-Setup-*.exe upload/TetherDesk-Remote-Setup.exe
           cp dist/TetherDesk-QuickSupport.exe upload/
 
       - name: Package (Linux .zip)
