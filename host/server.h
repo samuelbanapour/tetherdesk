@@ -97,7 +97,11 @@ private:
         bool view_only = false;
         bool sent_input = false;
         int quality_setting = 255;  // 0..3 fixed, 255 = automatic
-        int quality = 1;            // effective level in use
+        int quality = 0;            // effective level in use (auto starts lossless)
+        int eff_fps = 30;           // frame rate after congestion control
+        std::vector<uint8_t> tile_q;  // quality each tile was last sent at
+        int lossy_tiles = 0;
+        uint64_t last_change_us = 0;
         int fps = 30;
         uint32_t frame_id = 0, acked = 0;
         uint64_t last_seq = 0;

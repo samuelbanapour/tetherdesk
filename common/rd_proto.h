@@ -19,13 +19,15 @@
  *
  * Screen
  *   S->C DISPLAY_INFO u16 width, u16 height, u8 current, u8 count,
- *                     count x { str name, u16 width, u16 height }
+ *                     count x { str name, u16 width, u16 height },
+ *                     u8 flags (bit0: can switch resolution, bit1: full resolution on)
  *   S->C FRAME        u32 frame_id, u8 flags, u16 tile_count,
  *                     tile_count x { u16 x, u16 y, u16 w, u16 h, u8 encoding,
  *                                    u32 length, u8[length] payload }
  *   C->S FRAME_ACK    u32 frame_id  (flow control: host keeps <= 2 unacked)
  *   C->S REFRESH      (empty)  request a full-screen update
- *   C->S SETTINGS     u8 quality(0..3), u8 max_fps(1..60), u8 display
+ *   C->S SETTINGS     u8 quality(0..3, 255 auto), u8 max_fps(1..60), u8 display,
+ *                     u8 resolution (0 full/Retina, 1 half/fast, 255 unchanged)
  *
  * Input (ignored for view-only viewers)
  *   C->S POINTER      u16 x, u16 y, u8 buttons, i16 wheel_x, i16 wheel_y

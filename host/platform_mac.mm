@@ -85,6 +85,9 @@ public:
     }
 
     int current_display() const override { return current_; }
+    bool supports_high_resolution() const override { return true; }
+    bool high_resolution() const override { return native_res_; }
+    void set_high_resolution(bool on) override { native_res_ = on; }
     FramePtr latest() override { return slot_.get(); }
 
     bool start(int display, int max_fps, std::string &err) override {

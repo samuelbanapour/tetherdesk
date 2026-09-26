@@ -457,6 +457,11 @@ void App::handle_message(std::vector<uint8_t> &m) {
             int dw = rd_get_u16(&r), dh = rd_get_u16(&r);
             displays_.push_back({name, dw, dh});
         }
+        if (rd_remaining(&r)) {
+            uint8_t flags = rd_get_u8(&r);
+            hires_supported_ = flags & 1;
+            hires_on_ = flags & 2;
+        }
         if (!r.err && w > 0 && h > 0) resize_remote(w, h);
         break;
     }
@@ -585,6 +590,7 @@ void App::send_settings() {
     rd_buf_put_u8(&msg, uint8_t(quality_));
     rd_buf_put_u8(&msg, uint8_t(fps_));
     rd_buf_put_u8(&msg, uint8_t(cur_display_));
+    rd_buf_put_u8(&msg, uint8_t(resolution_pref_));
     send(msg);
     rd_buf_free(&msg);
 }
@@ -874,6 +880,10 @@ void App::handle_session_event(const SDL_Event &e) {
             if (down) menu_open_ = !menu_open_;
             return;
         }
+        if (k == SDLK_F7) {
+            if (down && displays_.size() > 1) switch_screen((cur_display_ + 1) % int(displays_.size()));
+            return;
+        }
         if (k == SDLK_F9) {
             if (down) {
                 release_input();
@@ -937,6 +947,21 @@ void App::handle_session_event(const SDL_Event &e) {
 }
 
 // ------------------------------------------------------------ drawing
+
+void App::switch_screen(int index) {
+    if (index < 0 || index >= int(displays_.size())) return;
+    if (view_only_) {
+        toast("View-only viewers can't switch screens", theme::warn);
+        return;
+    }
+    cur_display_ = index;
+    release_input();  // don't carry a held button/key across screens
+    send_settings();
+    const DisplayEntry &d = displays_[size_t(index)];
+    toast("Screen " + std::to_string(index + 1) + " of " + std::to_string(displays_.size()) + ": " + d.name + "  (" +
+              std::to_string(d.w) + "x" + std::to_string(d.h) + ")",
+          theme::dim);
+}
 
 void App::toast(const std::string &text, Color c) {
     toasts_.push_back({text, c, SDL_GetTicks()});
@@ -1635,7 +1660,9 @@ void App::draw_session() {
 void App::draw_connection_bar() {
     const float W = out_w_ / scale_;
     const uint32_t now = SDL_GetTicks();
-    const float bw = std::min(is_web() ? 400.f : 560.f, W - 16);
+    const int screens = displays_.size() > 1 ? int(std::min<size_t>(displays_.size(), 6)) : 0;
+    const float screens_w = screens ? 64.f + screens * 32.f : 0.f;
+    const float bw = std::min((is_web() ? 400.f : 560.f) + screens_w, W - 16);
     Rect bar{(W - bw) / 2, 0, bw, 38};
     const bool hot = mouse_y_ <= 4 || (bar_rect_.w > 0 && bar_rect_.contains(mouse_x_, mouse_y_)) || menu_open_;
     if (hot) bar_until_ = std::max(bar_until_, now + 1200);
@@ -1650,11 +1677,22 @@ void App::draw_connection_bar() {
     float x = bar.x + 6;
     if (ui_.button({x, 5, 44, 28}, bar_pinned_ ? "Pin*" : "Pin", bar_pinned_)) bar_pinned_ = !bar_pinned_;
     x += 50;
-    const float right_w = is_web() ? 190 : 330;
+    const float right_w = (is_web() ? 190 : 330) + screens_w;
     std::string title = target_.label.empty() ? host_name_ : target_.label;
     ui_.fill({x + 2, 16, 7, 7}, view_only_ ? theme::warn : theme::good, 3.5f);
     ui_.text(x + 14, 10, ellipsize(ui_, title, bar.x + bar.w - right_w - x - 20), theme::text);
     float bx = bar.x + bar.w - right_w;
+    if (screens) {
+        // Remote has several monitors: one button per screen.
+        ui_.text(bx, 11, "Screen", theme::dim);
+        bx += 56;
+        for (int i = 0; i < screens; i++) {
+            if (ui_.button({bx, 5, 28, 28}, std::to_string(i + 1), i == cur_display_) && i != cur_display_)
+                switch_screen(i);
+            bx += 32;
+        }
+        bx += 8;
+    }
     if (ui_.button({bx, 5, 70, 28}, "Menu", menu_open_)) menu_open_ = !menu_open_;
     bx += 76;
     if (!is_web()) {
@@ -1733,10 +1771,14 @@ void App::draw_menu() {
         std::vector<std::string> names;
         for (size_t i = 0; i < displays_.size(); i++) names.push_back(std::to_string(i + 1) + ". " + displays_[i].name);
         buttons_row(names, cur_display_, [&](int i) {
-            if (i != cur_display_) {
-                cur_display_ = i;
-                send_settings();
-            }
+            if (i != cur_display_) switch_screen(i);
+        });
+    }
+    if (hires_supported_) {
+        row_label("Sharpness");
+        buttons_row({"Sharp", "Fast"}, hires_on_ ? 0 : 1, [&](int i) {
+            resolution_pref_ = i;
+            send_settings();
         });
     }
     row_label("View");
@@ -1787,7 +1829,8 @@ void App::draw_menu() {
     }
     y += 10;
     ui_.text(x + pad, y,
-             is_web() ? "F8 menu  -  F9 chat" : "F8 menu  -  F9 chat  -  F11 full screen  -  drop files to send them",
+             is_web() ? "F7 next screen  -  F8 menu  -  F9 chat"
+                      : "F7 next screen - F8 menu - F9 chat - F11 full screen - drop files to send",
              theme::dim);
     y += 30;
     last_h = std::min(y - 56, H - 60);

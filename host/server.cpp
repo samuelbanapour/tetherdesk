@@ -658,6 +658,7 @@ void Server::on_authenticated(Conn &c) {
     c.id = next_id_++;
     c.view_only = cfg_.view_only;
     c.fps = cfg_.max_fps;
+    c.eff_fps = c.fps;
     c.need_full = true;
     c.adapt_window_us = rd_now_us();
 
@@ -687,11 +688,19 @@ void Server::handle_session_message(Conn &c, uint8_t type, rd_reader &r) {
     case RD_C_SETTINGS: {
         int q = rd_get_u8(&r), fps = rd_get_u8(&r), disp = rd_get_u8(&r);
         if (r.err) break;
+        int res = rd_remaining(&r) ? rd_get_u8(&r) : 255;  // newer viewers only
         int old_q = c.quality;
         c.quality_setting = (q <= 3 || q == 255) ? q : 255;
         if (c.quality_setting != 255) c.quality = c.quality_setting;
-        if (c.quality < old_q) c.need_full = true;  // sharper now: resend everything
+        (void)old_q;  // sharper settings take effect through per-tile refinement
         c.fps = std::max(1, std::min(cfg_.max_fps, fps));
+        c.eff_fps = c.fps;
+        if (res != 255 && !c.view_only && plat_.capturer->supports_high_resolution() &&
+            (res == 0) != plat_.capturer->high_resolution()) {
+            plat_.capturer->set_high_resolution(res == 0);
+            switch_display(plat_.capturer->current_display());  // restart capture at the new size
+            notice(res == 0 ? "Sharp (full resolution) screen" : "Fast (half resolution) screen");
+        }
         if (disp != plat_.capturer->current_display()) {
             if (!c.view_only) {
                 switch_display(disp);
@@ -805,6 +814,10 @@ void Server::send_display_info(Conn &c) {
         rd_buf_put_u16(&msg, uint16_t(displays_[i].width));
         rd_buf_put_u16(&msg, uint16_t(displays_[i].height));
     }
+    uint8_t flags = 0;
+    if (plat_.capturer->supports_high_resolution()) flags |= 1;
+    if (plat_.capturer->high_resolution()) flags |= 2;
+    rd_buf_put_u8(&msg, flags);
     send_msg(c, msg);
     rd_buf_free(&msg);
 }
@@ -825,16 +838,25 @@ void Server::maybe_send_frame(Conn &c, const FramePtr &f, uint64_t now) {
         c.shadow.assign(size_t(f->width) * f->height * 4, 0);
         c.shadow_w = f->width;
         c.shadow_h = f->height;
+        c.tile_q.clear();
+        c.lossy_tiles = 0;
         c.need_full = true;
         send_display_info(c);
     }
-    if (f->seq == c.last_seq && !c.need_full) return;
-    if (now - c.last_frame_us < kSecond / uint64_t(c.fps)) return;
+    const bool changed = f->seq != c.last_seq;
+    if (changed) c.last_change_us = now;
+    // Lossy tiles get refined to lossless once the screen settles briefly
+    // (or a few at a time alongside ongoing changes) - only in auto mode.
+    const bool refine = c.quality_setting == 255 && c.lossy_tiles > 0;
+    const bool settled = now - c.last_change_us > 250000;
+    if (!changed && !c.need_full && !(refine && settled)) return;
+    const int fps = std::max(1, std::min(c.fps, c.eff_fps));
+    if (now - c.last_frame_us < kSecond / uint64_t(fps)) return;
     if (c.frame_id - c.acked >= uint32_t(kMaxFramesInFlight) || c.pending() > kMaxPendingOut) {
         // Only a backlog in our own send queue means the *network* is the
         // bottleneck; a viewer that is merely slow to decode isn't helped by
-        // fewer colours, so that doesn't count towards lowering quality.
-        if (c.pending() > 0) c.stalls++;
+        // sending less, so that doesn't count towards congestion.
+        if (c.pending() > 0 && changed) c.stalls++;
         return;
     }
 
@@ -845,36 +867,39 @@ void Server::maybe_send_frame(Conn &c, const FramePtr &f, uint64_t now) {
     rd_buf_put_u8(&msg, c.need_full ? RD_FRAME_FULL : 0);
     const size_t count_at = msg.len;
     rd_buf_put_u16(&msg, 0);
-    EncodeStats st = encoder_.encode(*f, c.shadow, c.need_full, c.quality, msg);
+    const int budget = !refine ? 0 : settled ? 400 : 12;
+    EncodeStats st = encoder_.encode(*f, c.shadow, c.need_full, c.quality, msg, &c.tile_q, budget);
     c.last_seq = f->seq;
     c.need_full = false;
+    c.lossy_tiles = int(std::count_if(c.tile_q.begin(), c.tile_q.end(), [](uint8_t q) { return q != 0; }));
     if (st.tiles == 0) return;
     rd_buf_patch_u16(&msg, count_at, uint16_t(st.tiles));
     c.frame_id++;
     c.last_frame_us = now;
-    c.sends++;
+    if (changed) c.sends++;
     send_msg(c, msg);
 }
 
-// Automatic quality: frames that were ready but held back by flow control
-// ("stalls") mean the link or viewer can't keep up, so drop colour depth.
-// After several clean seconds, step back up and resend at the better quality.
+// Automatic quality. When the network can't keep up ("stalls": a new frame
+// was ready but our send queue was still backed up), first lower the frame
+// rate, and only reduce colour depth if that isn't enough. When things are
+// smooth again, restore colour first, then frame rate. Anything sent with
+// reduced colour is refined back to lossless once it stops changing.
 void Server::adapt_quality(Conn &c, uint64_t now) {
     if (now - c.adapt_window_us < kSecond) return;
-    if (c.quality_setting == 255) {
-        if (c.stalls > 2 && c.stalls * 2 > c.sends && c.quality < 3) {
-            c.quality++;
+    const bool congested = c.stalls > 2 && c.stalls * 2 > c.sends;
+    if (congested) {
+        c.clean_windows = 0;
+        if (c.eff_fps > 10) c.eff_fps = std::max(10, c.eff_fps / 2);
+        else if (c.quality_setting == 255 && c.quality < 2) c.quality++;
+    } else if (c.stalls == 0) {
+        if (++c.clean_windows >= 2) {
             c.clean_windows = 0;
-        } else if (c.stalls == 0) {
-            if (++c.clean_windows >= 3 && c.quality > 0 && now - c.last_refine_us > 5 * kSecond) {
-                c.quality--;
-                c.need_full = true;
-                c.last_refine_us = now;
-                c.clean_windows = 0;
-            }
-        } else {
-            c.clean_windows = 0;
+            if (c.quality_setting == 255 && c.quality > 0) c.quality--;
+            else if (c.eff_fps < c.fps) c.eff_fps = std::min(c.fps, c.eff_fps * 2);
         }
+    } else {
+        c.clean_windows = 0;
     }
     c.stalls = c.sends = 0;
     c.adapt_window_us = now;

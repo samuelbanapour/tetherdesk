@@ -38,6 +38,11 @@ public:
     // Latest complete frame, or null if none captured yet. Cheap; thread-safe.
     virtual FramePtr latest() = 0;
     virtual int current_display() const = 0;
+    // HiDPI ("Retina") displays can be captured at full pixel density or at
+    // half (logical) resolution. Takes effect on the next start().
+    virtual bool supports_high_resolution() const { return false; }
+    virtual bool high_resolution() const { return false; }
+    virtual void set_high_resolution(bool) {}
 };
 
 // Coordinates passed to the injector are in capture pixels of the
@@ -68,7 +73,7 @@ struct Platform {
 };
 
 struct PlatformOptions {
-    bool native_resolution = false;  // capture HiDPI displays at full pixel density
+    bool native_resolution = true;  // capture HiDPI displays at full pixel density
 };
 
 // Real OS backends (implemented per platform). Returns false with a

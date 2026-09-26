@@ -73,7 +73,8 @@ uint16_t ascii_to_hid(char c, bool &shift) {
 
 int main(int argc, char **argv) {
     std::string host = "localhost", password, snapshot, type_text, send_file, relay, relay_id;
-    int port = RD_DEFAULT_PORT, quality = 255;
+    int port = RD_DEFAULT_PORT, quality = 255, slow_ms = 0, display = 0;
+    double settle = 0;
     double seconds = 3;
     bool expect_fail = false, copy = false;
     for (int i = 1; i < argc; i++) {
@@ -82,6 +83,9 @@ int main(int argc, char **argv) {
         if (a == "--password") password = next();
         else if (a == "--port") port = std::atoi(next().c_str());
         else if (a == "--relay") relay = next();
+        else if (a == "--display") display = std::atoi(next().c_str());
+        else if (a == "--slow") slow_ms = std::atoi(next().c_str());  // simulate a slow link
+        else if (a == "--settle") settle = std::atof(next().c_str());  // extra fast-read seconds at the end
         else if (a == "--id") relay_id = next();
         else if (a == "--seconds") seconds = std::atof(next().c_str());
         else if (a == "--snapshot") snapshot = next();
@@ -209,7 +213,7 @@ int main(int argc, char **argv) {
                 rd_buf_put_u8(&out, RD_C_SETTINGS);
                 rd_buf_put_u8(&out, uint8_t(quality));
                 rd_buf_put_u8(&out, 30);
-                rd_buf_put_u8(&out, 0);
+                rd_buf_put_u8(&out, uint8_t(display));
                 send(out);
             } else if (type == RD_S_DISPLAY_INFO) {
                 w = rd_get_u16(&r);
@@ -311,7 +315,9 @@ int main(int argc, char **argv) {
             std::fprintf(stderr, "connection closed: %s\n", t->error().c_str());
             return expect_fail ? 0 : 1;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        double live = std::chrono::duration<double>(std::chrono::steady_clock::now() - live_since).count();
+        bool settling = phase == LIVE && live > seconds - settle;
+        std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms && !settling ? slow_ms : 2));
     }
 
     std::printf("%s: %dx%d, %d frames (%d full), %d tiles [solid %d, palette %d, zrgb %d, raw %d], %.2f MB, "

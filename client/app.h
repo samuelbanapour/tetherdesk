@@ -138,6 +138,7 @@ private:
     void draw_hud();
     void draw_toasts();
     void toast(const std::string &text, Color c = theme::text);
+    void switch_screen(int index);
     void update_view();
     Rect dialog_frame(float w, float h, const std::string &title);
     void form_field(const Rect &r, const std::string &label, std::string &value, bool secret = false,
@@ -215,6 +216,8 @@ private:
 
     // settings
     int quality_ = 255;  // 255 = auto
+    bool hires_supported_ = false, hires_on_ = false;
+    int resolution_pref_ = 255;  // 0 sharp, 1 fast, 255 = leave as the host has it
     int fps_ = 30;
     ScaleMode scale_mode_ = ScaleMode::Fit;
     bool show_stats_ = false;

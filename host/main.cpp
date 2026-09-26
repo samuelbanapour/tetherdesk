@@ -49,7 +49,7 @@ void usage() {
         "  --max-viewers N     simultaneous viewers (default 8)\n"
         "  --web-root DIR      directory containing the built web viewer\n"
         "  --downloads DIR     where received files are saved\n"
-        "  --native-res        capture HiDPI displays at full pixel density (more bandwidth)\n"
+        "  --standard-res      capture HiDPI (Retina) displays at half resolution (less bandwidth)\n"
         "  --key-file PATH     host identity key (default: in the user config directory)\n"
         "  --relay HOST[:PORT] internet relay to register with (default " TD_DEFAULT_RELAY ")\n"
         "  --no-relay          LAN/port-forwarding only: don't register with the relay\n"
@@ -231,6 +231,7 @@ int td_host_main(int argc, char **argv) {
         else if (a == "--web-root") cfg.web_root = next();
         else if (a == "--downloads") cfg.downloads_dir = next();
         else if (a == "--native-res") popts.native_resolution = true;
+        else if (a == "--standard-res") popts.native_resolution = false;
         else if (a == "--key-file") key_file = next();
         else if (a == "--relay") relay = next();
         else if (a == "--no-relay") relay.clear();

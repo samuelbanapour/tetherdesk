@@ -94,11 +94,13 @@ In the app, turn on **Share this PC** on the computer you want to reach. Note it
 ## Features
 
 - **Screen updates:** the screen is split into 64×64 tiles and only changed tiles are sent. Each tile uses whichever encoding is smallest: solid colour, a palette of up to 256 colours with 1/2/4/8-bit indices, or predicted RGB with LZ compression. Tiles are encoded in parallel across CPU cores.
-- **Quality:** each viewer gets flow control (at most 2 frames unacknowledged). Quality is chosen automatically: when the network backs up, colour depth drops, and when it clears, the host resends a sharp full frame. You can also pick Lossless, High, Medium or Low and a frame rate from 5 to 60 fps.
+- **Quality:** each viewer gets flow control (at most 2 frames unacknowledged). Auto quality starts lossless; on a congested network it lowers the frame rate first and reduces colours only as a last resort. Anything sent with reduced colours is automatically re-sent losslessly once that part of the screen stops changing. You can also pick Lossless, High, Medium or Low and a frame rate from 5 to 60 fps.
 - **Input:** mouse (including double-clicks and drags), wheel and keyboard. Keys are sent as USB HID codes and mapped to macOS, Windows or Linux key codes, so they work regardless of keyboard layout. Held keys are released when a viewer leaves or the viewer window loses focus.
 - **Several viewers at once:** there is a viewer list, a view-only mode, and the operator can kick a viewer or remove their control.
 - **Clipboard, chat and files:** clipboard text syncs both ways. Viewers and the host operator can chat. Dropping a file on the native viewer uploads it to `~/Downloads/TetherDesk` on the host, with a progress bar.
-- **Display and view options:** you can switch between displays. The viewer can fit the screen to the window or show it 1:1 with panning, and has a stats overlay (fps, Mbit/s, round-trip time) and fullscreen.
+- **Multiple monitors:** when the remote computer has several screens, the top bar shows **Screen 1 2 3…** buttons (or press **F7** to go to the next one).
+- **Sharpness:** Macs are captured at full Retina resolution by default; **Sharp / Fast** in the menu trades detail for bandwidth.
+- **Display and view options:** The viewer can fit the screen to the window or show it 1:1 with panning, and has a stats overlay (fps, Mbit/s, round-trip time) and fullscreen.
 - **Reconnects:** if the connection drops, the viewer reconnects automatically.
 - **Remote Desktop-style viewer:**
   - a home screen of saved PCs with session thumbnails, plus quick connect;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(TetherDesk VERSION 1.2.1 LANGUAGES C CXX)
+project(TetherDesk VERSION 1.3.0 LANGUAGES C CXX)
 if(APPLE)
   # Must happen before any subproject (static SDL) is added.
   enable_language(OBJC OBJCXX)

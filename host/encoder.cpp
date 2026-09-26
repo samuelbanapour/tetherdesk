@@ -61,12 +61,14 @@ FrameEncoder::~FrameEncoder() {
     for (auto &b : scratch_) rd_buf_free(&b);
 }
 
-EncodeStats FrameEncoder::encode(const Frame &f, std::vector<uint8_t> &shadow, bool full, int quality, rd_buf &out) {
+EncodeStats FrameEncoder::encode(const Frame &f, std::vector<uint8_t> &shadow, bool full, int quality, rd_buf &out,
+                                 std::vector<uint8_t> *tile_q, int refine_budget) {
     const int tiles_x = (f.width + RD_TILE - 1) / RD_TILE;
     const int tiles_y = (f.height + RD_TILE - 1) / RD_TILE;
     const int total = tiles_x * tiles_y;
     const size_t shadow_stride = size_t(f.width) * 4;
-    std::atomic<int> next{0};
+    std::atomic<int> next{0}, refines{0};
+    if (tile_q && tile_q->size() != size_t(total)) tile_q->assign(size_t(total), 0);
     std::vector<EncodeStats> stats(scratch_.size());
 
     pool_.run_all([&](unsigned wi) {
@@ -83,9 +85,17 @@ EncodeStats FrameEncoder::encode(const Frame &f, std::vector<uint8_t> &shadow, b
                 bool dirty = full;
                 for (int y = 0; y < th && !dirty; y++)
                     dirty = std::memcmp(src + size_t(y) * f.stride, sh + size_t(y) * shadow_stride, size_t(tw) * 4) != 0;
-                if (!dirty) continue;
-                for (int y = 0; y < th; y++)
-                    std::memcpy(sh + size_t(y) * shadow_stride, src + size_t(y) * f.stride, size_t(tw) * 4);
+                int q = quality;
+                if (dirty) {
+                    for (int y = 0; y < th; y++)
+                        std::memcpy(sh + size_t(y) * shadow_stride, src + size_t(y) * f.stride, size_t(tw) * 4);
+                } else if (tile_q && (*tile_q)[size_t(k)] && refines.fetch_add(1) < refine_budget) {
+                    q = 0;  // unchanged but previously sent lossy: refine to lossless
+                    st.refined++;
+                } else {
+                    continue;
+                }
+                if (tile_q) (*tile_q)[size_t(k)] = uint8_t(q);
 
                 rd_buf_put_u16(&buf, uint16_t(tx));
                 rd_buf_put_u16(&buf, uint16_t(ty));
@@ -95,7 +105,7 @@ EncodeStats FrameEncoder::encode(const Frame &f, std::vector<uint8_t> &shadow, b
                 rd_buf_put_u8(&buf, 0);
                 rd_buf_put_u32(&buf, 0);
                 const size_t start = buf.len;
-                int enc = rd_encode_tile(src, size_t(f.stride), tw, th, quality, &buf);
+                int enc = rd_encode_tile(src, size_t(f.stride), tw, th, q, &buf);
                 buf.data[enc_at] = uint8_t(enc);
                 rd_buf_patch_u32(&buf, enc_at + 1, uint32_t(buf.len - start));
                 st.tiles++;
@@ -108,6 +118,7 @@ EncodeStats FrameEncoder::encode(const Frame &f, std::vector<uint8_t> &shadow, b
     for (size_t i = 0; i < scratch_.size(); i++) {
         rd_buf_put(&out, scratch_[i].data, scratch_[i].len);
         total_stats.tiles += stats[i].tiles;
+        total_stats.refined += stats[i].refined;
         total_stats.bytes += scratch_[i].len;
         for (int e = 0; e < 4; e++) total_stats.by_encoding[e] += stats[i].by_encoding[e];
     }

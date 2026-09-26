@@ -40,6 +40,7 @@ private:
 
 struct EncodeStats {
     int tiles = 0;
+    int refined = 0;   // lossy tiles re-sent losslessly
     size_t bytes = 0;
     int by_encoding[4] = {0, 0, 0, 0};
 };
@@ -50,7 +51,11 @@ public:
     ~FrameEncoder();
     // Appends the tile records for every changed tile (all tiles if `full`)
     // to `out` and updates `shadow` (w*h*4 bytes, same layout as the frame).
-    EncodeStats encode(const Frame &f, std::vector<uint8_t> &shadow, bool full, int quality, rd_buf &out);
+    // `tile_q` (optional, one entry per tile) records the quality each tile
+    // was last sent at; up to `refine_budget` unchanged tiles that were sent
+    // lossy are re-sent losslessly, so still areas sharpen automatically.
+    EncodeStats encode(const Frame &f, std::vector<uint8_t> &shadow, bool full, int quality, rd_buf &out,
+                       std::vector<uint8_t> *tile_q = nullptr, int refine_budget = 0);
 
 private:
     WorkerPool &pool_;
