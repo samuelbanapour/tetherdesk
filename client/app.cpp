@@ -1793,6 +1793,7 @@ void App::draw_dialog() {
                 new_pw_.clear();
                 new_pw2_.clear();
                 dialog_ = Dialog::None;
+#ifndef __EMSCRIPTEN__  // (the web viewer never shares)
                 if (sharing_) {  // restart so the new password takes effect
                     write_password_file();
                     if (service_installed()) service_restart();
@@ -1800,6 +1801,7 @@ void App::draw_dialog() {
                 } else if (new_pw_then_start_) {
                     start_sharing();
                 }
+#endif
             }
         }
         break;
