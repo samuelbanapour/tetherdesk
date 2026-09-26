@@ -15,7 +15,7 @@
 #include <thread>
 
 #include "platform.h"
-#include "rd_font_data.h"
+#include "rd_font.h"
 #include "rd_proto.h"
 
 namespace td {
@@ -60,14 +60,16 @@ struct Canvas {
         d = 0xFF000000u | r << 16 | g << 8 | b;
     }
     int text(int x, int y, const std::string &s, uint32_t c, int max_w = 1 << 30) {
-        const rd_font_face &f = rd_font_faces[0];
+        const rd_font_face &f = *rd_font_face_at(rd_font_body());
+        const uint8_t *alpha = rd_font_alpha(rd_font_body());
+        if (!alpha) return 0;
         int pen = x;
         for (unsigned char ch : s) {
             if (ch < 32 || ch > 126) ch = '?';
             const rd_glyph &g = f.glyphs[ch - 32];
             if (pen + g.advance - x > max_w) break;
             for (int gy = 0; gy < f.height; gy++)
-                for (int gx = 0; gx < g.w; gx++) blend(pen + gx, y + gy, c, f.alpha[gy * f.atlas_w + g.x + gx]);
+                for (int gx = 0; gx < g.w; gx++) blend(pen + gx, y + gy, c, alpha[gy * f.atlas_w + g.x + gx]);
             pen += g.advance;
         }
         return pen - x;
@@ -76,7 +78,8 @@ struct Canvas {
 
 int text_width(const std::string &s) {
     int w = 0;
-    for (unsigned char ch : s) w += rd_font_faces[0].glyphs[(ch < 32 || ch > 126 ? '?' : ch) - 32].advance;
+    const rd_font_face &f = *rd_font_face_at(rd_font_body());
+    for (unsigned char ch : s) w += f.glyphs[(ch < 32 || ch > 126 ? '?' : ch) - 32].advance;
     return w;
 }
 

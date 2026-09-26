@@ -10,7 +10,8 @@
 //   GET /data?id=ID&key=KEY&ticket=T host data channel for one viewer
 //   GET /v/ID                         viewer (WebSocket); closes with code
 //                                     4404 if that ID isn't online
-//   GET /, /index.*                   the web viewer (C++ -> WebAssembly)
+//   GET /                             the TetherDesk website
+//   GET /app, /index.*                the web viewer (C++ -> WebAssembly)
 //   GET /get                          download page for the QuickSupport app
 //   GET /healthz                      health check
 //
@@ -141,8 +142,9 @@ void http_response(Conn &c, int code, const char *status, const char *type, cons
     char hdr[768];
     int n = std::snprintf(hdr, sizeof hdr,
                           "HTTP/1.1 %d %s\r\nServer: TetherDesk-Relay\r\nContent-Type: %s\r\nContent-Length: %zu\r\n"
-                          "Cache-Control: no-cache\r\nX-Content-Type-Options: nosniff\r\n%sConnection: close\r\n\r\n",
-                          code, status, type, body.size(), extra);
+                          "%sX-Content-Type-Options: nosniff\r\n%sConnection: close\r\n\r\n",
+                          code, status, type, body.size(),
+                          std::strstr(extra, "Cache-Control") ? "" : "Cache-Control: no-cache\r\n", extra);
     rd_buf_put(&c.out, hdr, size_t(n));
     rd_buf_put(&c.out, body.data(), body.size());
     c.close_after_flush = true;
@@ -191,17 +193,16 @@ const char *mime_type(const std::string &path) {
     if (ends(".wasm")) return "application/wasm";
     if (ends(".css")) return "text/css";
     if (ends(".png")) return "image/png";
+    if (ends(".webp")) return "image/webp";
+    if (ends(".ico")) return "image/x-icon";
     if (ends(".svg")) return "image/svg+xml";
     return "application/octet-stream";
 }
 
 void serve_static(Conn &c, std::string path) {
     path = path.substr(0, path.find_first_of("?#"));
-    if (path == "/" || path.empty()) {  // open the web viewer in "connect by ID" mode
-        http_response(c, 302, "Found", "text/plain", "", "Location: /app#relay\r\n");
-        return;
-    }
-    if (path == "/app") path = "/index.html";
+    if (path == "/" || path.empty()) path = "/home.html";  // the website
+    if (path == "/app") path = "/index.html";              // the web viewer
     if (path == "/get") path = "/get.html";
     if (path.find("..") != std::string::npos || path.find('\\') != std::string::npos ||
         path.find('%') != std::string::npos) {
@@ -215,6 +216,7 @@ void serve_static(Conn &c, std::string path) {
     }
     std::string body((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     std::string extra = "Strict-Transport-Security: max-age=31536000\r\n";
+    if (path.rfind("/assets/", 0) == 0) extra += "Cache-Control: public, max-age=86400\r\n";
     if (path.rfind("/download/", 0) == 0)
         extra += "Content-Disposition: attachment; filename=\"" + path.substr(10) + "\"\r\n";
     http_response(c, 200, "OK", mime_type(path), body, extra.c_str());

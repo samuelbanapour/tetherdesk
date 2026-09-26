@@ -4,39 +4,53 @@
 #include <cmath>
 #include <vector>
 
-#include "rd_font_data.h"
+#include "rd_font.h"
 
 namespace td {
 
 namespace {
-// Glyph sizes are designed for the 14 px face; the 28 px face is used at 2x.
+// Layout sizes are in points relative to 14 px body text.
 constexpr float kBaseSize = 14.0f;
 }
 
 bool Ui::init(SDL_Renderer *r) {
     r_ = r;
-    for (int f = 0; f < 2; f++) {
-        const rd_font_face &face = rd_font_faces[f];
-        std::vector<uint32_t> px(size_t(face.atlas_w) * face.height);
-        for (size_t i = 0; i < px.size(); i++) px[i] = (uint32_t(face.alpha[i]) << 24) | 0x00FFFFFF;
-        atlas_[f] = SDL_CreateTexture(r, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, face.atlas_w, face.height);
-        if (!atlas_[f]) return false;
-        SDL_UpdateTexture(atlas_[f], nullptr, px.data(), face.atlas_w * 4);
-        SDL_SetTextureBlendMode(atlas_[f], SDL_BLENDMODE_BLEND);
-    }
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-    return true;
+    return atlas(rd_font_body()) != nullptr;
 }
 
 void Ui::shutdown() {
-    for (auto &t : atlas_)
-        if (t) SDL_DestroyTexture(t);
-    atlas_[0] = atlas_[1] = nullptr;
+    for (auto &t : atlases_)
+        if (t.second) SDL_DestroyTexture(t.second);
+    atlases_.clear();
 }
+
+SDL_Texture *Ui::atlas(int face) {
+    auto it = atlases_.find(face);
+    if (it != atlases_.end()) return it->second;
+    const rd_font_face *f = rd_font_face_at(face);
+    const uint8_t *alpha = rd_font_alpha(face);
+    SDL_Texture *t = nullptr;
+    if (alpha) {
+        std::vector<uint32_t> px(size_t(f->atlas_w) * f->height);
+        for (size_t i = 0; i < px.size(); i++) px[i] = (uint32_t(alpha[i]) << 24) | 0x00FFFFFF;
+        // Nearest sampling: glyphs are drawn at exactly their rasterized size.
+        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
+        t = SDL_CreateTexture(r_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, f->atlas_w, f->height);
+        if (t) {
+            SDL_UpdateTexture(t, nullptr, px.data(), f->atlas_w * 4);
+            SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+        }
+    }
+    atlases_[face] = t;
+    return t;
+}
+
+// The face whose pixel size matches `size` points at the current scale.
+int Ui::face_for(float size) const { return rd_font_best(kBaseSize * size * scale_); }
 
 void Ui::begin(float scale, float mouse_x, float mouse_y, bool mouse_down) {
     scale_ = scale;
-    face_ = scale >= 1.4f ? 1 : 0;
     mx_ = mouse_x;
     my_ = mouse_y;
     down_ = mouse_down;
@@ -115,32 +129,34 @@ void Ui::outline(const Rect &r, Color c, float radius) {
     }
 }
 
-float Ui::line_height(float size) const { return rd_font_faces[0].height * size; }
+float Ui::line_height(float size) const { return rd_font_face_at(face_for(size))->height / scale_; }
 
 float Ui::text_width(const std::string &s, float size) const {
+    const rd_font_face *f = rd_font_face_at(face_for(size));
     float w = 0;
-    for (unsigned char ch : s) w += rd_font_faces[0].glyphs[(ch < 32 || ch > 126 ? '?' : ch) - 32].advance;
-    return w * size;
+    for (unsigned char ch : s) w += f->glyphs[(ch < 32 || ch > 126 ? '?' : ch) - 32].advance;
+    return w / scale_;
 }
 
 float Ui::text(float x, float y, const std::string &s, Color c, float size) {
-    const rd_font_face &face = rd_font_faces[face_];
-    const float glyph_scale = size * scale_ * kBaseSize / float(face.size);  // atlas px -> output px
-    SDL_Texture *atlas = atlas_[face_];
-    SDL_SetTextureColorMod(atlas, c.r, c.g, c.b);
-    SDL_SetTextureAlphaMod(atlas, c.a);
-    // Advance in 1x metrics so layout is identical whichever face is used.
-    float pen = x * scale_;
-    const float top = y * scale_;
+    const int fi = face_for(size);
+    const rd_font_face &face = *rd_font_face_at(fi);
+    SDL_Texture *tex = atlas(fi);
+    if (!tex) return 0;
+    SDL_SetTextureColorMod(tex, c.r, c.g, c.b);
+    SDL_SetTextureAlphaMod(tex, c.a);
+    // Whole output pixels only, so every glyph lands pixel-aligned.
+    int pen = int(std::lround(x * scale_));
+    const int top = int(std::lround(y * scale_));
     for (unsigned char ch : s) {
         if (ch < 32 || ch > 126) ch = '?';
         const rd_glyph &g = face.glyphs[ch - 32];
         if (ch != ' ') {
             SDL_Rect src = {g.x, 0, g.w, face.height};
-            SDL_FRect dst = {std::round(pen), std::round(top), g.w * glyph_scale, face.height * glyph_scale};
-            SDL_RenderCopyF(r_, atlas, &src, &dst);
+            SDL_Rect dst = {pen, top, g.w, face.height};
+            SDL_RenderCopy(r_, tex, &src, &dst);
         }
-        pen += rd_font_faces[0].glyphs[ch - 32].advance * size * scale_;
+        pen += g.advance;
     }
     return pen / scale_ - x;
 }

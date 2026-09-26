@@ -5,6 +5,9 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 #include "rd_codec.h"
 #include "rd_crypto.h"
@@ -83,13 +86,21 @@ App::App(SDL_Window *window, SDL_Renderer *renderer, Options opts)
     focus_ = (is_web() && f_password_.empty()) ? 3 : 0;
     SDL_StartTextInput();
 
+#ifndef __EMSCRIPTEN__
+    if (!opts_.quick_support && service_installed()) {
+        // Always-on sharing is already running in the background: show it.
+        sharing_ = true;
+        share_log_path_ = store_.dir() + "host.log";
+        if (opts_.start_sharing) tab_ = HomeTab::Share;
+    } else
+#endif
     if (opts_.start_sharing && !is_web()) {
         tab_ = HomeTab::Share;
         start_sharing();
     }
     if (opts_.autoconnect) {
         SavedPc pc;
-        pc.label = opts_.host;
+        pc.label = relay_id_of(opts_.host).empty() ? opts_.host : "Computer " + pretty_id(relay_id_of(opts_.host));
         pc.host = opts_.host;
         pc.port = opts_.port;
         pc.user_name = opts_.name;
@@ -110,6 +121,7 @@ App::~App() {
     for (auto &t : thumbs_)
         if (t.second) SDL_DestroyTexture(t.second);
     if (tex_) SDL_DestroyTexture(tex_);
+    if (tex_small_) SDL_DestroyTexture(tex_small_);
     rd_buf_free(&sealed_);
     rd_wipe(&ch_, sizeof ch_);
     ui_.shutdown();
@@ -529,6 +541,9 @@ void App::resize_remote(int w, int h) {
     rw_ = w;
     rh_ = h;
     fb_.assign(size_t(w) * h, 0xFF000000u);
+    if (tex_small_) SDL_DestroyTexture(tex_small_);
+    tex_small_ = nullptr;
+    small_w_ = small_h_ = 0;
     if (tex_) SDL_DestroyTexture(tex_);
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
     tex_ = SDL_CreateTexture(ren_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
@@ -566,6 +581,11 @@ void App::on_frame(rd_reader &r, size_t wire_bytes) {
         SDL_UpdateTexture(tex_, &u, fb_.data() + size_t(miny) * rw_ + minx, rw_ * 4);
     } else {
         for (auto &rc : rects) SDL_UpdateTexture(tex_, &rc, fb_.data() + size_t(rc.y) * rw_ + rc.x, rw_ * 4);
+    }
+    if (tex_small_ && small_w_ && small_w_ < rw_) {
+        if (rects.size() > 48) downscale_region(minx, miny, maxx, maxy);
+        else
+            for (auto &rc : rects) downscale_region(rc.x, rc.y, rc.x + rc.w, rc.y + rc.h);
     }
 
     rd_buf ack;
@@ -985,6 +1005,52 @@ void App::update_view() {
     }
 }
 
+bool App::ensure_small() {
+    const int dw = int(std::lround(rw_ * view_s_)), dh = int(std::lround(rh_ * view_s_));
+    if (scale_mode_ != ScaleMode::Fit || view_s_ >= 0.999f || dw < 16 || dh < 16) return false;
+    if (dw == small_w_ && dh == small_h_ && tex_small_) return true;
+    if (tex_small_) SDL_DestroyTexture(tex_small_);
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");  // drawn 1:1
+    tex_small_ = SDL_CreateTexture(ren_, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, dw, dh);
+    if (!tex_small_) return false;
+    small_w_ = dw;
+    small_h_ = dh;
+    small_.assign(size_t(dw) * dh, 0xFF000000u);
+    downscale_region(0, 0, rw_, rh_);
+    return true;
+}
+
+// Box filter: each output pixel is the average of the source pixels it
+// covers. Recomputes only the output pixels touched by the source rect.
+void App::downscale_region(int x0, int y0, int x1, int y1) {
+    if (!tex_small_ || fb_.empty()) return;
+    const float fx = float(small_w_) / rw_, fy = float(small_h_) / rh_;
+    const int dx0 = std::max(0, int(std::floor(x0 * fx))), dx1 = std::min(small_w_, int(std::ceil(x1 * fx)));
+    const int dy0 = std::max(0, int(std::floor(y0 * fy))), dy1 = std::min(small_h_, int(std::ceil(y1 * fy)));
+    for (int dy = dy0; dy < dy1; dy++) {
+        const int sy0 = int(dy / fy), sy1 = std::min(rh_, std::max(sy0 + 1, int(std::ceil((dy + 1) / fy))));
+        for (int dx = dx0; dx < dx1; dx++) {
+            const int sx0 = int(dx / fx), sx1 = std::min(rw_, std::max(sx0 + 1, int(std::ceil((dx + 1) / fx))));
+            uint32_t r = 0, g = 0, b = 0, n = 0;
+            for (int sy = sy0; sy < sy1; sy++) {
+                const uint32_t *row = fb_.data() + size_t(sy) * rw_;
+                for (int sx = sx0; sx < sx1; sx++) {
+                    const uint32_t p = row[sx];
+                    r += (p >> 16) & 255;
+                    g += (p >> 8) & 255;
+                    b += p & 255;
+                    n++;
+                }
+            }
+            small_[size_t(dy) * small_w_ + dx] = 0xFF000000u | (r / n) << 16 | (g / n) << 8 | (b / n);
+        }
+    }
+    if (dx1 > dx0 && dy1 > dy0) {
+        SDL_Rect u = {dx0, dy0, dx1 - dx0, dy1 - dy0};
+        SDL_UpdateTexture(tex_small_, &u, small_.data() + size_t(dy0) * small_w_ + dx0, small_w_ * 4);
+    }
+}
+
 void App::render() {
     int ww, wh;
     SDL_GetWindowSize(win_, &ww, &wh);
@@ -1203,19 +1269,35 @@ static std::string random_share_password() {
     return pw;
 }
 
+// The host reads its password from a private file, so it never shows up in
+// process listings or the always-on startup entry.
+bool App::write_password_file() {
+    std::string path = store_.dir() + "share_password";
+    FILE *f = std::fopen(path.c_str(), "w");
+    if (!f) return false;
+#ifndef _WIN32
+    fchmod(fileno(f), 0600);
+#endif
+    std::fprintf(f, "%s\n", store_.share_password.c_str());
+    std::fclose(f);
+    return true;
+}
+
+std::vector<std::string> App::host_args() {
+    std::vector<std::string> args = {"--run-host", "--password-file", store_.dir() + "share_password",
+                                     "--no-console", "--relay", opts_.relay};
+    if (store_.share_view_only) args.push_back("--view-only");
+    if (store_.share_demo || opts_.share_demo) args.push_back("--demo");
+    return args;
+}
+
 void App::start_sharing() {
 #ifndef __EMSCRIPTEN__
     if (store_.share_password.empty()) {
         store_.share_password = random_share_password();
         store_.save();
     }
-    // The host is built into this same executable ("--run-host").
-    std::string exe = executable_path();
-    share_log_path_ = (store_.dir().empty() ? std::string(".") + "/" : store_.dir()) + "host.log";
-    std::vector<std::string> args = {"--run-host", "--password", store_.share_password, "--no-console",
-                                     "--relay", opts_.relay};
-    if (store_.share_view_only) args.push_back("--view-only");
-    if (store_.share_demo || opts_.share_demo) args.push_back("--demo");
+    share_log_path_ = (store_.dir().empty() ? std::string("./") : store_.dir()) + "host.log";
     share_error_.clear();
     share_identity_.clear();
     share_id_.clear();
@@ -1223,8 +1305,22 @@ void App::start_sharing() {
     share_urls_.clear();
     share_activity_.clear();
     share_needs_screen_perm_ = share_needs_input_perm_ = false;
+    if (!write_password_file()) {
+        share_error_ = "cannot write the password file";
+        return;
+    }
     std::string err;
-    sharing_ = host_.start(exe, args, share_log_path_, err);
+    const bool always = store_.share_always_on && service_supported() && !opts_.quick_support;
+    if (always) {
+        std::vector<std::string> args = host_args();
+        args.erase(args.begin());  // the service entry adds --run-host itself on Windows
+#ifndef _WIN32
+        args.insert(args.begin(), "--run-host");
+#endif
+        sharing_ = service_install(executable_path(), args, share_log_path_, err);
+    } else {
+        sharing_ = host_.start(executable_path(), host_args(), share_log_path_, err);
+    }
     if (!sharing_) share_error_ = err;
 #endif
 }
@@ -1232,16 +1328,24 @@ void App::start_sharing() {
 void App::stop_sharing() {
 #ifndef __EMSCRIPTEN__
     host_.stop();
+    if (service_installed()) service_uninstall();
 #endif
     sharing_ = false;
     share_urls_.clear();
+}
+
+void App::restart_sharing() {
+    if (!sharing_) return;
+    stop_sharing();
+    start_sharing();
 }
 
 // The host reports everything on stdout; read its log to show status.
 void App::poll_share_log() {
 #ifndef __EMSCRIPTEN__
     if (share_log_path_.empty()) return;
-    bool alive = host_.running();
+    // An always-on service is kept alive by the OS; the in-app host is ours.
+    bool alive = host_.running() || service_installed();
     std::ifstream f(share_log_path_);
     std::string line;
     std::vector<std::string> urls, activity;
@@ -1310,7 +1414,8 @@ void App::draw_share(float top) {
     const bool starting = sharing_ && share_identity_.empty();
     std::string status = !sharing_ ? "Off - nobody can connect"
                          : starting ? "Starting..."
-                         : share_relay_online_ ? "On - reachable from anywhere"
+                         : share_relay_online_ ? (service_installed() ? "Always on - reachable from anywhere"
+                                                                      : "On - reachable from anywhere")
                          : share_id_.empty() ? "On - local network only"
                                              : "On - connecting to the internet relay...";
     ui_.text(x + 80, y + 6, status, sharing_ ? theme::good : theme::dim, 1.1f);
@@ -1363,8 +1468,9 @@ void App::draw_share(float top) {
         store_.save();
         share_show_pw_ = true;
         if (sharing_) {  // restart so the new password takes effect
-            stop_sharing();
-            start_sharing();
+            write_password_file();
+            if (service_installed()) service_restart();
+            else restart_sharing();
         }
     }
     ui_.text(x + 18, y + 110, "Identity " + (share_identity_.empty() ? std::string("-") : share_identity_), theme::dim);
@@ -1387,18 +1493,23 @@ void App::draw_share(float top) {
 
     if (!qs) {
         // Options (take effect the next time sharing starts).
-        bool vo = store_.share_view_only, demo = store_.share_demo;
-        if (ui_.checkbox(x, y, "View only - others can watch but not control", vo) ||
-            ui_.checkbox(x, y + 28, "Share a demo desktop instead of this screen (for testing)", demo)) {
+        bool vo = store_.share_view_only, demo = store_.share_demo, always = store_.share_always_on;
+        bool changed = false;
+        if (service_supported())
+            changed |= ui_.checkbox(x, y, "Always on - keep sharing when TetherDesk is closed, start with this computer",
+                                    always);
+        const float oy = service_supported() ? 28.f : 0.f;
+        changed |= ui_.checkbox(x, y + oy, "View only - others can watch but not control", vo);
+        changed |= ui_.checkbox(x, y + oy + 28, "Share a demo desktop instead of this screen (for testing)", demo);
+        if (changed) {
             store_.share_view_only = vo;
             store_.share_demo = demo;
+            store_.share_always_on = always;
             store_.save();
-            if (sharing_) {
-                stop_sharing();
-                start_sharing();
-            }
+            if (always && !sharing_) start_sharing();  // "always on" implies on
+            else restart_sharing();
         }
-        y += 70;
+        y += 70 + oy;
     }
 
     ui_.text(x, y, "Activity", theme::dim);
@@ -1609,7 +1720,11 @@ void App::draw_dialog() {
 
 void App::draw_session() {
     update_view();
-    if (tex_) {
+    if (tex_ && ensure_small()) {
+        // Shown smaller than 1:1: draw the area-averaged copy pixel-for-pixel.
+        SDL_Rect dst = {int(std::lround(view_x_)), int(std::lround(view_y_)), small_w_, small_h_};
+        SDL_RenderCopy(ren_, tex_small_, nullptr, &dst);
+    } else if (tex_) {
         SDL_FRect dst = {view_x_, view_y_, rw_ * view_s_, rh_ * view_s_};
         SDL_RenderCopyF(ren_, tex_, nullptr, &dst);
     }

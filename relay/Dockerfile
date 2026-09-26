@@ -25,7 +25,8 @@ FROM debian:bookworm-slim
 RUN useradd --system --no-create-home relay
 COPY --from=relay /src/build/tetherdesk-relay /usr/local/bin/tetherdesk-relay
 COPY --from=web /src/build-web/index.html /src/build-web/index.js /src/build-web/index.wasm /app/public/
-COPY relay/get.html /app/public/get.html
+COPY relay/site/home.html relay/site/get.html /app/public/
+COPY relay/site/assets /app/public/assets
 USER relay
 WORKDIR /app
 ENV PORT=10000

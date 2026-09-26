@@ -61,7 +61,11 @@ std::string key_for(const std::string &host, int port) { return host + ":" + std
 
 void Store::load() {
 #ifndef __EMSCRIPTEN__
-    if (char *p = SDL_GetPrefPath("TetherDesk", "TetherDesk")) {
+    // TETHERDESK_DATA_DIR lets tests and demos use a separate data folder.
+    if (const char *override_dir = std::getenv("TETHERDESK_DATA_DIR"); override_dir && *override_dir) {
+        dir_ = override_dir;
+        if (dir_.back() != '/' && dir_.back() != '\\') dir_ += '/';
+    } else if (char *p = SDL_GetPrefPath("TetherDesk", "TetherDesk")) {
         dir_ = p;
         SDL_free(p);
     }
@@ -87,6 +91,7 @@ void Store::load() {
             share_password = v[1];
             share_view_only = v[2] == "1";
             share_demo = v[3] == "1";
+            share_always_on = v.size() >= 5 && v[4] == "1";
         } else if (v.size() >= 3 && v[0] == "known") {
             known_[v[1]] = v[2];
         }
@@ -105,7 +110,7 @@ void Store::save() const {
               << pc.last_used << '\t' << esc(pc.remember ? pc.password : "") << '\n';
         for (const auto &k : known_) f << "known\t" << esc(k.first) << '\t' << esc(k.second) << '\n';
         f << "share\t" << esc(share_password) << '\t' << (share_view_only ? 1 : 0) << '\t' << (share_demo ? 1 : 0)
-          << '\n';
+          << '\t' << (share_always_on ? 1 : 0) << '\n';
     }
 #ifndef _WIN32
     chmod(tmp.c_str(), 0600);  // may contain remembered passwords

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(TetherDesk VERSION 1.3.1 LANGUAGES C CXX)
+project(TetherDesk VERSION 1.4.0 LANGUAGES C CXX)
 if(APPLE)
   # Must happen before any subproject (static SDL) is added.
   enable_language(OBJC OBJCXX)
@@ -19,6 +19,7 @@ set(COMMON_SOURCES
   common/rd_bytes.c
   common/rd_codec.c
   common/rd_crypto.c
+  common/rd_font.c
   common/rd_net.c
   common/rd_secure.c
   common/rd_ws.c)
@@ -176,7 +177,8 @@ if(TARGET SDL2::SDL2 OR TARGET SDL2::SDL2-static OR TARGET PkgConfig::SDL2)
   elseif(APPLE)
     set(TD_APP_EXTRA MACOSX_BUNDLE packaging/macos/tetherdesk.icns)
   endif()
-  add_executable(tetherdesk ${TD_APP_EXTRA} ${CLIENT_SOURCES} client/transport_native.cpp client/host_process.cpp)
+  add_executable(tetherdesk ${TD_APP_EXTRA} ${CLIENT_SOURCES} client/transport_native.cpp client/host_process.cpp
+                 client/host_service.cpp)
   target_compile_options(tetherdesk PRIVATE ${TD_WARNINGS})
   set_target_properties(tetherdesk PROPERTIES OUTPUT_NAME TetherDesk)
   if(APPLE)

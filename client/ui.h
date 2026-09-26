@@ -7,6 +7,7 @@
 
 #include <SDL.h>
 
+#include <map>
 #include <string>
 
 namespace td {
@@ -72,7 +73,9 @@ public:
 
 private:
     SDL_Renderer *r_ = nullptr;
-    SDL_Texture *atlas_[2] = {nullptr, nullptr};
+    SDL_Texture *atlas(int face);  // lazily built per font size
+    int face_for(float size) const;
+    std::map<int, SDL_Texture *> atlases_;
     float scale_ = 1;
     float mx_ = 0, my_ = 0;
     bool down_ = false;
@@ -80,7 +83,6 @@ private:
     bool pressed_ = false, released_ = false;
     float press_x_ = 0, press_y_ = 0, release_x_ = 0, release_y_ = 0;
     bool consumed_ = false;
-    int face_ = 0;
 };
 
 }  // namespace td

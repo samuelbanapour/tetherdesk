@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "host_process.h"
+#include "host_service.h"
 #include "rd_bytes.h"
 #include "rd_secure.h"
 #include "store.h"
@@ -130,6 +131,9 @@ private:
     void start_sharing();
     void stop_sharing();
     void poll_share_log();
+    std::vector<std::string> host_args();
+    bool write_password_file();
+    void restart_sharing();
     void draw_web_connect();
     void draw_dialog();
     void draw_session();
@@ -140,6 +144,10 @@ private:
     void toast(const std::string &text, Color c = theme::text);
     void switch_screen(int index);
     void update_view();
+    // High-quality (area-averaged) downscale of the remote screen, used when
+    // it is shown smaller than 1:1 so text stays sharp instead of smeared.
+    bool ensure_small();
+    void downscale_region(int x0, int y0, int x1, int y1);
     Rect dialog_frame(float w, float h, const std::string &title);
     void form_field(const Rect &r, const std::string &label, std::string &value, bool secret = false,
                     bool digits = false);
@@ -206,6 +214,9 @@ private:
     int rw_ = 0, rh_ = 0;
     std::vector<uint32_t> fb_;
     SDL_Texture *tex_ = nullptr;
+    SDL_Texture *tex_small_ = nullptr;
+    std::vector<uint32_t> small_;
+    int small_w_ = 0, small_h_ = 0;
     std::vector<DisplayEntry> displays_;
     int cur_display_ = 0;
     std::string host_name_, host_os_;

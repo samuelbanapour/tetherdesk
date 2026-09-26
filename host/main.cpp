@@ -42,6 +42,7 @@ void usage() {
         "  --port N            listen port (default %d)\n"
         "  --bind ADDR         listen address (default :: = all IPv6+IPv4; 127.0.0.1 = this machine only)\n"
         "  --password PW       viewer password (default: a random one is generated)\n"
+        "  --password-file F   read the password from the first line of F (keeps it out of ps)\n"
         "  --view-only         viewers can watch but not control\n"
         "  --no-files          refuse file uploads\n"
         "  --fps N             maximum frame rate, 1-60 (default 30)\n"
@@ -223,6 +224,19 @@ int td_host_main(int argc, char **argv) {
         if (a == "--port") cfg.port = std::atoi(next());
         else if (a == "--bind") cfg.bind = next();
         else if (a == "--password") cfg.password = next();
+        else if (a == "--password-file") {
+            std::string path = next();
+            FILE *pf = std::fopen(path.c_str(), "r");
+            char line[256] = "";
+            if (!pf || !std::fgets(line, sizeof line, pf)) {
+                std::fprintf(stderr, "error: cannot read password file %s\n", path.c_str());
+                return 2;
+            }
+            std::fclose(pf);
+            cfg.password = line;
+            while (!cfg.password.empty() && (cfg.password.back() == '\n' || cfg.password.back() == '\r'))
+                cfg.password.pop_back();
+        }
         else if (a == "--view-only") cfg.view_only = true;
         else if (a == "--no-files") cfg.allow_files = false;
         else if (a == "--fps") cfg.max_fps = std::max(1, std::min(60, std::atoi(next())));

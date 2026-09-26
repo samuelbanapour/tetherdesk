@@ -96,6 +96,7 @@ jobs:
         shell: bash
         run: |
           bash ./packaging/macos/make_dmg.sh "${GITHUB_REF_NAME#v}"
+          cp dist/TetherDesk-*-macOS.dmg dist/TetherDesk-macOS.dmg   # stable name for the website
           echo "ASSET=dist/*" >> "$GITHUB_ENV"
 
       - name: Package (Windows installer)
@@ -113,6 +114,7 @@ jobs:
           if [ ! -f "$iscc" ]; then choco install innosetup -y --no-progress; fi
           "$iscc" -Q "-DAppVersion=${GITHUB_REF_NAME#v}" "-DStageDir=$(cygpath -w "$stage")" \
               "-O$(cygpath -w "$PWD/dist")" packaging/windows/tetherdesk.iss
+          cp dist/TetherDesk-Setup-*.exe dist/TetherDesk-Setup.exe   # stable name for the website
           echo "ASSET=dist/*" >> "$GITHUB_ENV"
 
       - name: Package (Linux .zip)
@@ -123,12 +125,16 @@ jobs:
           mkdir -p "$out/web"
           cp build/TetherDesk build/tetherdesk-host build/tetherdesk-probe README.md "$out/"
           cp build-web/index.html build-web/index.js build-web/index.wasm "$out/web/"
-          # Relay bundle (deployed to the server by relay/deploy-ec2.sh)
-          mkdir -p "$out/relay/public"
+          # Relay bundle (deployed to the server by relay/deploy-ec2.sh):
+          # the relay, the website and the web viewer.
+          mkdir -p "$out/relay/public/assets"
           cp build/tetherdesk-relay "$out/relay/"
-          cp build-web/index.html build-web/index.js build-web/index.wasm relay/get.html "$out/relay/public/"
+          cp build-web/index.html build-web/index.js build-web/index.wasm "$out/relay/public/"
+          cp relay/site/home.html relay/site/get.html "$out/relay/public/"
+          cp relay/site/assets/* "$out/relay/public/assets/"
           zip -qr "$out.zip" "$out"
-          echo "ASSET=$out.zip" >> "$GITHUB_ENV"
+          cp "$out.zip" TetherDesk-linux-x64.zip   # stable name for "latest" links
+          printf 'ASSET<<EOF\n%s\nTetherDesk-linux-x64.zip\nEOF\n' "$out.zip" >> "$GITHUB_ENV"
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')

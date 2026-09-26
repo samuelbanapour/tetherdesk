@@ -91,6 +91,17 @@ To use a different relay, pass `--relay your.host` to the host and the viewer. P
 
 In the app, turn on **Share this PC** on the computer you want to reach. Note its ID, and connect to it from anywhere by that ID. On the same network, its local address works too.
 
+Tick **Always on** to keep a computer reachable all the time. Sharing then keeps running after TetherDesk is closed, starts when the computer starts, and restarts itself if it ever stops:
+
+- **macOS:** a per-user LaunchAgent.
+- **Windows:** a startup entry plus a watchdog.
+
+The host reads its password from a private file, so it never appears in process listings.
+
+### Website
+
+The relay also serves the TetherDesk website (`relay/site/home.html`) at `/`, the browser viewer at `/app`, and the QuickSupport page at `/get`.
+
 ## Features
 
 - **Screen updates:** the screen is split into 64×64 tiles and only changed tiles are sent. Each tile uses whichever encoding is smallest: solid colour, a palette of up to 256 colours with 1/2/4/8-bit indices, or predicted RGB with LZ compression. Tiles are encoded in parallel across CPU cores.

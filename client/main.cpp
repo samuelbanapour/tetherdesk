@@ -20,6 +20,7 @@
 
 #include "app.h"
 #include "host_process.h"
+#include "host_service.h"
 #include "rd_proto.h"
 
 #ifdef TD_EMBED_HOST
@@ -75,6 +76,9 @@ int main(int argc, char **argv) {
 #ifdef TD_EMBED_HOST
     // The app doubles as the host: "Share this PC" runs it with --run-host.
     if (argc > 1 && std::strcmp(argv[1], "--run-host") == 0) return td_host_main(argc - 1, argv + 1);
+#endif
+#ifdef _WIN32
+    if (argc > 1 && std::strcmp(argv[1], "--host-service") == 0) return td::service_watchdog_main(argc - 1, argv + 1);
 #endif
     td::Options opts;
 #ifdef __EMSCRIPTEN__

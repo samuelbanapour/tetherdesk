@@ -29,10 +29,11 @@ trap 'rm -rf "$tmp"' EXIT
 curl -fsSL "$url" -o "$tmp/td.zip"
 python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$tmp/td.zip" "$tmp"
 src="$(find "$tmp" -maxdepth 2 -type d -name relay | head -1)"
-install -d -m 0755 "$dir/public"
+install -d -m 0755 "$dir/public" "$dir/public/assets"
 install -m 0755 "$src/tetherdesk-relay" "$dir/tetherdesk-relay.new"
 mv -f "$dir/tetherdesk-relay.new" "$dir/tetherdesk-relay"
-install -m 0644 "$src"/public/* "$dir/public/"
+find "$src/public" -maxdepth 1 -type f -exec install -m 0644 {} "$dir/public/" \;
+if [ -d "$src/public/assets" ]; then install -m 0644 "$src"/public/assets/* "$dir/public/assets/"; fi
 
 cat > /etc/systemd/system/tetherdesk-relay.service <<UNIT
 [Unit]
@@ -64,8 +65,31 @@ LockPersonality=true
 [Install]
 WantedBy=multi-user.target
 UNIT
+# Watchdog: systemd restarts the relay if it exits; this also catches a hang
+# (process alive but not answering) by probing /healthz every minute.
+cat > /etc/systemd/system/tetherdesk-relay-watchdog.service <<UNIT
+[Unit]
+Description=Restart the TetherDesk relay if it stops answering
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'curl -fsS --max-time 10 http://127.0.0.1:$port/healthz >/dev/null || systemctl restart tetherdesk-relay'
+UNIT
+cat > /etc/systemd/system/tetherdesk-relay-watchdog.timer <<UNIT
+[Unit]
+Description=Check the TetherDesk relay every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target
+UNIT
+
 systemctl daemon-reload
 systemctl enable tetherdesk-relay >/dev/null 2>&1
+systemctl enable --now tetherdesk-relay-watchdog.timer >/dev/null 2>&1
 systemctl restart tetherdesk-relay
 
 caddyfile=/etc/caddy/Caddyfile
