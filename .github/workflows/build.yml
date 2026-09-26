@@ -1,12 +1,13 @@
 name: build
 
-# Builds and tests the host, native viewer, probe and web viewer on Windows,
-# Linux and macOS. Pushing a tag like v1.0.0 also publishes zips to a GitHub
-# release (no workflow artifacts are uploaded, to stay within storage quota).
+# Builds and tests the host, native viewer, probe, relay and web viewer on
+# Windows, Linux and macOS. Every push to main refreshes the single
+# "v1.0.0" release: the tag is moved to the new commit and the download files
+# are replaced in place (stable names, no new version per change). No
+# workflow artifacts are uploaded, to stay within storage quota.
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -15,9 +16,30 @@ permissions:
 
 env:
   EMSDK_VERSION: 3.1.74
+  RELEASE_TAG: v1.0.0
 
 jobs:
+  prepare:
+    # Points the one release at this commit (creating it if it's missing).
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Move the release tag to this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag -f "$RELEASE_TAG"
+          git push -f origin "refs/tags/$RELEASE_TAG"
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --title "TetherDesk" --latest --notes-file .github/release-notes.md
+          else
+            gh release edit "$RELEASE_TAG" --title "TetherDesk" --latest --notes-file .github/release-notes.md
+          fi
+
   build:
+    needs: prepare
+    if: always() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -92,15 +114,16 @@ jobs:
           cmake --build build-web --parallel
 
       - name: Package (macOS .dmg)
-        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'macOS'
+        if: github.event_name != 'pull_request' && runner.os == 'macOS'
         shell: bash
         run: |
-          bash ./packaging/macos/make_dmg.sh "${GITHUB_REF_NAME#v}"
-          cp dist/TetherDesk-*-macOS.dmg dist/TetherDesk-macOS.dmg   # stable name for the website
-          echo "ASSET=dist/*" >> "$GITHUB_ENV"
+          bash ./packaging/macos/make_dmg.sh
+          mkdir -p upload
+          cp dist/TetherDesk-*-macOS.dmg upload/TetherDesk-macOS.dmg
+          cp dist/TetherDesk-QuickSupport-macOS.zip upload/
 
       - name: Package (Windows installer)
-        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        if: github.event_name != 'pull_request' && runner.os == 'Windows'
         shell: bash
         run: |
           stage="$RUNNER_TEMP/stage"
@@ -112,16 +135,17 @@ jobs:
           cp build-web/index.html build-web/index.js build-web/index.wasm "$stage/web/"
           iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
           if [ ! -f "$iscc" ]; then choco install innosetup -y --no-progress; fi
-          "$iscc" -Q "-DAppVersion=${GITHUB_REF_NAME#v}" "-DStageDir=$(cygpath -w "$stage")" \
+          "$iscc" -Q "-DAppVersion=1.0.0" "-DStageDir=$(cygpath -w "$stage")" \
               "-O$(cygpath -w "$PWD/dist")" packaging/windows/tetherdesk.iss
-          cp dist/TetherDesk-Setup-*.exe dist/TetherDesk-Setup.exe   # stable name for the website
-          echo "ASSET=dist/*" >> "$GITHUB_ENV"
+          mkdir -p upload
+          cp dist/TetherDesk-Setup-*.exe upload/TetherDesk-Setup.exe
+          cp dist/TetherDesk-QuickSupport.exe upload/
 
       - name: Package (Linux .zip)
-        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Linux'
+        if: github.event_name != 'pull_request' && runner.os == 'Linux'
         shell: bash
         run: |
-          out="TetherDesk-${GITHUB_REF_NAME#v}-linux-x64"
+          out="TetherDesk-linux-x64"
           mkdir -p "$out/web"
           cp build/TetherDesk build/tetherdesk-host build/tetherdesk-probe README.md "$out/"
           cp build-web/index.html build-web/index.js build-web/index.wasm "$out/web/"
@@ -132,26 +156,12 @@ jobs:
           cp build-web/index.html build-web/index.js build-web/index.wasm "$out/relay/public/"
           cp relay/site/home.html relay/site/get.html "$out/relay/public/"
           cp relay/site/assets/* "$out/relay/public/assets/"
-          zip -qr "$out.zip" "$out"
-          cp "$out.zip" TetherDesk-linux-x64.zip   # stable name for "latest" links
-          printf 'ASSET<<EOF\n%s\nTetherDesk-linux-x64.zip\nEOF\n' "$out.zip" >> "$GITHUB_ENV"
+          mkdir -p upload
+          zip -qr "upload/$out.zip" "$out"
 
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ env.ASSET }}
-          body: |
-            **Downloads**
-            - macOS 12.3+ (Apple Silicon): `TetherDesk-*-macOS.dmg` - open it and drag TetherDesk to Applications.
-              The app isn't notarized yet: the first time, right-click it and choose **Open**.
-            - Windows 10/11 (x64): `TetherDesk-Setup-*.exe`. SmartScreen may warn about an unknown
-              publisher - choose **More info > Run anyway**.
-            - Linux (x64, X11): `TetherDesk-*-linux-x64.zip` (needs libsdl2, libx11, libxtst).
-
-            - **QuickSupport** (`TetherDesk-QuickSupport.exe` / `-macOS.zip`): nothing to install - the person
-              who needs help runs it and reads out the ID and password.
-
-            Use **Connect to a PC** (an ID works from anywhere, via the relay) to control another computer, or
-            **Share this PC** to let someone connect to yours. Helpers can also connect from any browser at
-            https://tetherdesk.54-151-75-113.nip.io/
+      - name: Update the release files
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" upload/* --clobber

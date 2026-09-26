@@ -73,7 +73,8 @@ uint16_t ascii_to_hid(char c, bool &shift) {
 
 int main(int argc, char **argv) {
     std::string host = "localhost", password, snapshot, type_text, send_file, relay, relay_id;
-    int port = RD_DEFAULT_PORT, quality = 255, slow_ms = 0, display = 0;
+    int port = RD_DEFAULT_PORT, quality = 255, slow_ms = 0, display = 0, point_x = -1, point_y = -1;
+    bool pointed = false;
     double settle = 0;
     double seconds = 3;
     bool expect_fail = false, copy = false;
@@ -84,6 +85,11 @@ int main(int argc, char **argv) {
         else if (a == "--port") port = std::atoi(next().c_str());
         else if (a == "--relay") relay = next();
         else if (a == "--display") display = std::atoi(next().c_str());
+        else if (a == "--point") {  // move the remote pointer to X,Y (remote pixels) after the first frame
+            std::string v = next();
+            point_x = std::atoi(v.c_str());
+            point_y = std::atoi(v.substr(v.find(',') + 1).c_str());
+        }
         else if (a == "--slow") slow_ms = std::atoi(next().c_str());  // simulate a slow link
         else if (a == "--settle") settle = std::atof(next().c_str());  // extra fast-read seconds at the end
         else if (a == "--id") relay_id = next();
@@ -253,6 +259,18 @@ int main(int argc, char **argv) {
                 rd_buf_put_u32(&out, id);
                 send(out);
             }
+        }
+        if (phase == LIVE && !pointed && point_x >= 0 && frames > 0) {
+            for (int step = 0; step < 2; step++) {  // two nearby moves so the OS registers motion
+                rd_buf_put_u8(&out, RD_C_POINTER);
+                rd_buf_put_u16(&out, uint16_t(point_x + step * 4));
+                rd_buf_put_u16(&out, uint16_t(point_y + step * 4));
+                rd_buf_put_u8(&out, 0);
+                rd_buf_put_u16(&out, 0);
+                rd_buf_put_u16(&out, 0);
+                send(out);
+            }
+            pointed = true;
         }
         if (phase == LIVE && !typed && (!type_text.empty() || copy) && frames > 0) {
             for (char c : type_text) {

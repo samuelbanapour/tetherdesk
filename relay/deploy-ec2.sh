@@ -6,7 +6,7 @@
 #   relay/deploy-ec2.sh ubuntu@54.151.75.113 [domain]
 #   SSH_KEY=~/.ssh/other.pem relay/deploy-ec2.sh ...
 #
-# Idempotent: re-run to upgrade. The relay listens on 127.0.0.1:4020 only,
+# Idempotent: re-run to upgrade (uses the latest release build). The relay listens on 127.0.0.1:4020 only,
 # runs as its own unprivileged user with memory/CPU caps, and Caddy proxies
 # https://<domain>/ to it (WebSockets included).
 set -euo pipefail
@@ -14,9 +14,8 @@ target="${1:?usage: $0 user@host [domain]}"
 domain="${2:-tetherdesk.54-151-75-113.nip.io}"
 key="${SSH_KEY:-$HOME/.ssh/login.pem}"
 repo="samuelbanapour/tetherdesk"
-tag="$(gh release list --repo "$repo" --limit 1 --json tagName --jq '.[0].tagName')"
-url="https://github.com/$repo/releases/download/$tag/TetherDesk-${tag#v}-linux-x64.zip"
-echo "deploying relay from $tag to $target ($domain)"
+url="https://github.com/$repo/releases/latest/download/TetherDesk-linux-x64.zip"
+echo "deploying the latest relay build to $target ($domain)"
 
 ssh -i "$key" -o BatchMode=yes "$target" "sudo bash -s -- '$url' '$domain'" <<'REMOTE'
 set -euo pipefail

@@ -31,9 +31,11 @@ tetherdesk/
 
 Download from the [Releases page](../../releases):
 
-- **macOS 12.3+:** `TetherDesk-<version>-macOS.dmg`. Open it and drag TetherDesk to Applications. The app isn't notarized, so the first time you open it, right-click it and choose **Open**. After each update, macOS asks you to allow Screen Recording and Accessibility again. Keeping those approvals across updates needs an Apple Developer ID certificate; `packaging/macos/sign.sh` supports one. Free self-signed certificates don't work: current macOS refuses permissions to them entirely.
-- **Windows 10/11:** `TetherDesk-Setup-<version>.exe`. SmartScreen may warn about an unknown publisher; choose **More info → Run anyway**.
-- **Linux (X11):** a zip containing the binaries.
+- **macOS 12.3+:** `TetherDesk-macOS.dmg`. Open it and drag TetherDesk to Applications. The app isn't notarized, so the first time you open it, right-click it and choose **Open**. After each update, macOS asks you to allow Screen Recording and Accessibility again. Keeping those approvals across updates needs an Apple Developer ID certificate; `packaging/macos/sign.sh` supports one. Free self-signed certificates don't work: current macOS refuses permissions to them entirely.
+- **Windows 10/11:** `TetherDesk-Setup.exe`. SmartScreen may warn about an unknown publisher; choose **More info → Run anyway**.
+- **Linux (X11):** `TetherDesk-linux-x64.zip`, containing the binaries.
+
+There is a single release (`v1.0.0`). CI replaces its files on every push to `main`, so the download links always get the newest build.
 
 The app has two tabs:
 
@@ -66,8 +68,8 @@ open build/TetherDesk.app                 # native viewer (build/TetherDesk on L
 build/TetherDesk.app/Contents/MacOS/TetherDesk 192.168.1.20 --password abcde-fghjk  # connect straight away
 ```
 
-Prebuilt Windows, Linux and macOS zips are attached to each
-[GitHub release](../../releases) (built by `.github/workflows/build.yml`).
+Prebuilt Windows, Linux and macOS downloads are on the
+[release page](../../releases/latest) (built by `.github/workflows/build.yml`).
 
 ### Helping someone: nothing to install, no VPN
 
