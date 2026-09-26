@@ -94,16 +94,8 @@ jobs:
       - name: Package (macOS .dmg)
         if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'macOS'
         shell: bash
-        env:
-          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-          TD_SIGN_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
-          if [ -n "$MACOS_CERT_P12" ]; then
-            echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
-            export TD_SIGN_P12="$RUNNER_TEMP/signing.p12"
-          fi
           bash ./packaging/macos/make_dmg.sh "${GITHUB_REF_NAME#v}"
-          rm -f "$RUNNER_TEMP/signing.p12"
           echo "ASSET=dist/*" >> "$GITHUB_ENV"
 
       - name: Package (Windows installer)

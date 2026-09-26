@@ -3,25 +3,27 @@
 #
 #   packaging/macos/sign.sh path/to/TetherDesk.app
 #
-# The certificate is read from $TD_SIGN_P12 (a .p12 file) and
-# $TD_SIGN_PASSWORD, or by default from
-# ~/Library/Application Support/TetherDesk-signing/. Without a certificate the
-# app is ad-hoc signed instead.
+# Signs with a certificate only when $TD_SIGN_P12 (a .p12) and
+# $TD_SIGN_PASSWORD are set - meant for an Apple "Developer ID Application"
+# certificate. Otherwise the app is ad-hoc signed.
 #
-# Why this matters: macOS remembers Screen Recording / Accessibility approval
-# per *signing identity*. With a stable certificate, updates keep those
-# permissions; ad-hoc signatures change on every build, so every update would
-# have to be approved again.
+# Why not a free self-signed certificate: macOS keeps Screen Recording /
+# Accessibility approval per signing identity, which would make approval
+# survive updates - but current macOS (verified on 27.0) refuses to match
+# permissions to an identity whose certificate isn't trusted
+# ("Failed to match existing code requirement"), so a self-signed build can
+# never be granted access at all. Ad-hoc builds work; each update just needs
+# approving once. A Developer ID certificate fixes both this and Gatekeeper.
 #
 # A throwaway keychain is used so the login keychain is never touched.
 set -euo pipefail
 app="${1:?usage: $0 path/to/App.app}"
-dir="$HOME/Library/Application Support/TetherDesk-signing"
-p12="${TD_SIGN_P12:-$dir/tetherdesk-signing.p12}"
-pass="${TD_SIGN_PASSWORD:-$(cat "$dir/p12.password" 2>/dev/null || true)}"
+p12="${TD_SIGN_P12:-}"
+pass="${TD_SIGN_PASSWORD:-}"
+cn="${TD_SIGN_NAME:-Developer ID Application}"
 
-if [ ! -f "$p12" ] || [ -z "$pass" ]; then
-  echo "sign.sh: no certificate found - ad-hoc signing (permissions won't survive updates)" >&2
+if [ -z "$p12" ] || [ ! -f "$p12" ] || [ -z "$pass" ]; then
+  echo "sign.sh: ad-hoc signing (set TD_SIGN_P12/TD_SIGN_PASSWORD for a Developer ID certificate)" >&2
   codesign --force --deep --sign - "$app"
   exit 0
 fi
@@ -41,7 +43,7 @@ orig="$(security list-keychains -d user | tr -d '"' | xargs)"
 security list-keychains -d user -s "$kc" $orig
 trap 'security list-keychains -d user -s $orig; cleanup' EXIT
 
-identity="$(security find-certificate -c "TetherDesk Code Signing" -Z "$kc" | awk '/SHA-1 hash/{print $3; exit}')"
-codesign --force --deep --timestamp=none --keychain "$kc" --sign "$identity" "$app"
+identity="$(security find-certificate -c "$cn" -Z "$kc" | awk '/SHA-1 hash/{print $3; exit}')"
+codesign --force --deep --options runtime --timestamp --keychain "$kc" --sign "$identity" "$app"
 codesign --verify --deep --strict "$app"
-echo "signed $app with TetherDesk Code Signing ($identity)"
+echo "signed $app with $cn ($identity)"
