@@ -351,9 +351,11 @@ bool create_native_platform(Platform &out, const PlatformOptions &opts, std::str
               "Tip: `tetherdesk-host --demo` works without any permissions.";
         return false;
     }
-    if (!AXIsProcessTrusted()) {
-        NSDictionary *opts = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt : @YES};
-        AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)opts);
+    // CGPreflightPostEventAccess is the check that matches what we actually do
+    // (post CGEvents). AXIsProcessTrusted can report false for the helper
+    // process the app spawns even when Accessibility is granted.
+    if (!CGPreflightPostEventAccess()) {
+        CGRequestPostEventAccess();
         std::fprintf(stderr,
                      "[warn] Accessibility permission missing: viewers can watch but mouse/keyboard input will be "
                      "ignored by macOS until you allow it in Privacy & Security > Accessibility.\n");
