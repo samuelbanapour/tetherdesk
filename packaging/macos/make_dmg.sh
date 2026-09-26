@@ -29,7 +29,9 @@ if otool -L "$app/Contents/MacOS/TetherDesk" | grep -q /opt/homebrew; then
 fi
 
 find "$app" -name '._*' -delete
-codesign --force --deep --sign - "$app"
+# Stable signing identity so macOS keeps Screen Recording / Accessibility
+# approval across updates (falls back to ad-hoc without the certificate).
+bash "$(dirname "$0")/sign.sh" "$app"
 
 stage="$(mktemp -d)"
 ditto "$app" "$stage/TetherDesk.app"

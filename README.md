@@ -31,7 +31,7 @@ tetherdesk/
 
 Download from the [Releases page](../../releases):
 
-- **macOS 12.3+:** `TetherDesk-<version>-macOS.dmg`. Open it and drag TetherDesk to Applications. The app isn't notarized, so the first time you open it, right-click it and choose **Open**.
+- **macOS 12.3+:** `TetherDesk-<version>-macOS.dmg`. Open it and drag TetherDesk to Applications. The app isn't notarized, so the first time you open it, right-click it and choose **Open**. It's signed with TetherDesk's own certificate (`packaging/macos/sign.sh`), so once you allow Screen Recording and Accessibility, **updates keep those permissions**.
 - **Windows 10/11:** `TetherDesk-Setup-<version>.exe`. SmartScreen may warn about an unknown publisher; choose **More info → Run anyway**.
 - **Linux (X11):** a zip containing the binaries.
 
