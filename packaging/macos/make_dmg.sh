@@ -9,11 +9,16 @@ jobs="$(sysctl -n hw.ncpu)"
 # Downloaded dependencies live on the system disk: unpacking archives onto
 # exFAT/FAT volumes adds "._*" files that confuse CMake's FetchContent.
 deps="${TMPDIR:-/tmp}/tetherdesk-deps"
-cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DTD_STATIC_SDL=ON -DFETCHCONTENT_BASE_DIR="$deps"
+# Universal binary: runs natively on Apple Silicon and Intel Macs.
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DTD_STATIC_SDL=ON -DFETCHCONTENT_BASE_DIR="$deps" \
+  -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 cmake --build build-release -j "$jobs"
 app=build-release/TetherDesk.app
 
-if command -v emcmake >/dev/null; then
+if [ -n "${TD_WEB_DIR:-}" ]; then  # prebuilt web viewer (CI builds it once, elsewhere)
+  mkdir -p "$app/Contents/Resources/web"
+  cp "$TD_WEB_DIR"/index.html "$TD_WEB_DIR"/index.js "$TD_WEB_DIR"/index.wasm "$app/Contents/Resources/web/"
+elif command -v emcmake >/dev/null; then
   emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release
   cmake --build build-web -j "$jobs"
   mkdir -p "$app/Contents/Resources/web"

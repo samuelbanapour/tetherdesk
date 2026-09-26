@@ -1,0 +1,132 @@
+# TetherDesk — Azure Pipelines build (Windows, macOS, Linux + web viewer).
+#
+# Runs on pushes to main (batched: this org has a single free
+# Microsoft-hosted parallel job, so the jobs below run one after another and
+# pushes that land while a build is running are folded into the next one).
+#
+# Like the other pipelines in this org, it publishes Azure Pipeline
+# artifacts and does not write to GitHub itself (it holds no GitHub write
+# token). tools/publish-release.sh copies the artifacts of the latest
+# successful run into the single "v1.0.0" GitHub release.
+#
+# Artifacts:
+#   web      the browser viewer (index.html/js/wasm), shared by the others
+#   linux    TetherDesk-linux-x64.zip (app, host, probe, relay bundle + website)
+#   windows  TetherDesk-Setup.exe, TetherDesk-QuickSupport.exe
+#   macos    TetherDesk-macOS.dmg, TetherDesk-QuickSupport-macOS.zip (Universal)
+
+trigger:
+  batch: true
+  branches:
+    include: [main]
+  paths:
+    exclude: ['*.md', '.github/*']
+pr: none
+
+variables:
+  EMSDK_VERSION: 3.1.74
+  CMAKE_EXTRA: ''  # per-job extra CMake flags (defined here so it's never unset)
+
+stages:
+  - stage: Build
+    jobs:
+      # ------------------------------------------------------------ web viewer
+      - job: Web
+        displayName: Web viewer (Emscripten)
+        pool: { vmImage: ubuntu-22.04 }
+        steps:
+          - bash: |
+              set -euo pipefail
+              git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$(Agent.TempDirectory)/emsdk"
+              cd "$(Agent.TempDirectory)/emsdk"
+              ./emsdk install "$EMSDK_VERSION"
+              ./emsdk activate "$EMSDK_VERSION"
+            displayName: Install Emscripten
+          - bash: |
+              set -euo pipefail
+              source "$(Agent.TempDirectory)/emsdk/emsdk_env.sh"
+              emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release
+              cmake --build build-web --parallel
+              mkdir -p "$(Build.ArtifactStagingDirectory)/web"
+              cp build-web/index.html build-web/index.js build-web/index.wasm "$(Build.ArtifactStagingDirectory)/web/"
+            displayName: Build web viewer
+          - publish: $(Build.ArtifactStagingDirectory)/web
+            artifact: web
+
+      # ------------------------------------------------------------ Linux
+      - job: Linux
+        dependsOn: Web
+        pool: { vmImage: ubuntu-22.04 }
+        steps:
+          - bash: sudo apt-get update && sudo apt-get install -y libsdl2-dev libx11-dev libxtst-dev zip
+            displayName: Install dependencies
+          - template: .azure/build-test.yml
+          - download: current
+            artifact: web
+          - bash: |
+              set -euo pipefail
+              out=TetherDesk-linux-x64
+              web="$(Pipeline.Workspace)/web"
+              mkdir -p "$out/web" "$out/relay/public/assets"
+              cp build/TetherDesk build/tetherdesk-host build/tetherdesk-probe README.md "$out/"
+              cp "$web"/index.* "$out/web/"
+              # Relay bundle (deployed by relay/deploy-ec2.sh): relay + website + web viewer.
+              cp build/tetherdesk-relay "$out/relay/"
+              cp "$web"/index.* relay/site/home.html relay/site/get.html "$out/relay/public/"
+              cp relay/site/assets/* "$out/relay/public/assets/"
+              mkdir -p "$(Build.ArtifactStagingDirectory)/linux"
+              zip -qr "$(Build.ArtifactStagingDirectory)/linux/$out.zip" "$out"
+            displayName: Package
+          - publish: $(Build.ArtifactStagingDirectory)/linux
+            artifact: linux
+
+      # ------------------------------------------------------------ Windows
+      - job: Windows
+        dependsOn: Web
+        pool: { vmImage: windows-latest }
+        variables:
+          CMAKE_EXTRA: -DTD_STATIC_SDL=ON
+        steps:
+          - template: .azure/build-test.yml
+          - download: current
+            artifact: web
+          - bash: |
+              set -euo pipefail
+              stage="$(Agent.TempDirectory)/stage"
+              out="$(Build.ArtifactStagingDirectory)/windows"
+              mkdir -p "$stage/web" "$out"
+              cp build/Release/TetherDesk.exe build/Release/tetherdesk-host.exe build/Release/tetherdesk-probe.exe README.md "$stage/"
+              cp "$(Pipeline.Workspace)"/web/index.* "$stage/web/"
+              # QuickSupport: the same single self-contained .exe, named so it opens straight into sharing.
+              cp build/Release/TetherDesk.exe "$out/TetherDesk-QuickSupport.exe"
+              iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+              if [ ! -f "$iscc" ]; then choco install innosetup -y --no-progress; fi
+              "$iscc" -Q "-DAppVersion=1.0.0" "-DStageDir=$(cygpath -w "$stage")" \
+                  "-O$(cygpath -w "$(Agent.TempDirectory)/setup")" packaging/windows/tetherdesk.iss
+              cp "$(Agent.TempDirectory)"/setup/TetherDesk-Setup-*.exe "$out/TetherDesk-Setup.exe"
+            displayName: Package installer + QuickSupport
+          - publish: $(Build.ArtifactStagingDirectory)/windows
+            artifact: windows
+
+      # ------------------------------------------------------------ macOS
+      - job: macOS
+        dependsOn: Web
+        pool: { vmImage: macOS-14 }
+        variables:
+          CMAKE_EXTRA: -DTD_STATIC_SDL=ON
+        steps:
+          - template: .azure/build-test.yml
+          - download: current
+            artifact: web
+          - bash: |
+              set -euo pipefail
+              # Universal (Apple Silicon + Intel) app, with the prebuilt web viewer.
+              TD_WEB_DIR="$(Pipeline.Workspace)/web" bash packaging/macos/make_dmg.sh
+              out="$(Build.ArtifactStagingDirectory)/macos"
+              mkdir -p "$out"
+              cp dist/TetherDesk-*-macOS.dmg "$out/TetherDesk-macOS.dmg"
+              cp dist/TetherDesk-QuickSupport-macOS.zip "$out/"
+              lipo -archs build-release/TetherDesk.app/Contents/MacOS/TetherDesk
+            displayName: Package DMG + QuickSupport
+          - publish: $(Build.ArtifactStagingDirectory)/macos
+            artifact: macos

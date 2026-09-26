@@ -5,10 +5,9 @@ name: build
 # "v1.0.0" release: the tag is moved to the new commit and the download files
 # are replaced in place (stable names, no new version per change). No
 # workflow artifacts are uploaded, to stay within storage quota.
+# Builds now run on Azure Pipelines (azure-pipelines.yml); this workflow is
+# kept as a manual fallback only.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
