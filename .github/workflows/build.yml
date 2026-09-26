@@ -118,7 +118,7 @@ jobs:
         run: |
           bash ./packaging/macos/make_dmg.sh
           mkdir -p upload
-          cp dist/TetherDesk-*-macOS.dmg upload/TetherDesk-macOS.dmg
+          cp dist/TetherDesk-[0-9]*-macOS.dmg upload/TetherDesk-macOS.dmg
           cp dist/TetherDesk-QuickSupport-macOS.zip dist/TetherDesk-Remote-macOS.dmg upload/
 
       - name: Package (Windows installer)

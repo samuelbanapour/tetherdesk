@@ -133,7 +133,7 @@ stages:
               TD_WEB_DIR="$(Pipeline.Workspace)/web" bash packaging/macos/make_dmg.sh
               out="$(Build.ArtifactStagingDirectory)/macos"
               mkdir -p "$out"
-              cp dist/TetherDesk-*-macOS.dmg "$out/TetherDesk-macOS.dmg"
+              cp dist/TetherDesk-[0-9]*-macOS.dmg "$out/TetherDesk-macOS.dmg"
               cp dist/TetherDesk-QuickSupport-macOS.zip dist/TetherDesk-Remote-macOS.dmg "$out/"
               lipo -archs build-release/TetherDesk.app/Contents/MacOS/TetherDesk
             displayName: Package DMGs + QuickSupport
