@@ -97,8 +97,8 @@ stages:
               mkdir -p "$stage/web" "$out"
               cp build/Release/TetherDesk.exe build/Release/tetherdesk-host.exe build/Release/tetherdesk-probe.exe README.md "$stage/"
               cp "$(Pipeline.Workspace)"/web/index.* "$stage/web/"
-              # QuickSupport: the same single self-contained .exe, named so it opens straight into sharing.
-              cp build/Release/TetherDesk.exe "$out/TetherDesk-QuickSupport.exe"
+              # QuickSupport: the dedicated share-only app (one self-contained .exe).
+              cp build/Release/TetherDesk-QuickSupport.exe "$out/"
               iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
               if [ ! -f "$iscc" ]; then choco install innosetup -y --no-progress; fi
               "$iscc" -Q "-DAppVersion=1.0.0" "-DStageDir=$(cygpath -w "$stage")" \

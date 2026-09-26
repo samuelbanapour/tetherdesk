@@ -129,8 +129,8 @@ jobs:
           mkdir -p "$stage/web"
           cp build/Release/TetherDesk.exe build/Release/tetherdesk-host.exe build/Release/tetherdesk-probe.exe README.md "$stage/"
           mkdir -p dist
-          # QuickSupport: one self-contained .exe that opens straight into sharing.
-          cp build/Release/TetherDesk.exe dist/TetherDesk-QuickSupport.exe
+          # QuickSupport: the dedicated share-only app (one self-contained .exe).
+          cp build/Release/TetherDesk-QuickSupport.exe dist/
           cp build-web/index.html build-web/index.js build-web/index.wasm "$stage/web/"
           iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
           if [ ! -f "$iscc" ]; then choco install innosetup -y --no-progress; fi

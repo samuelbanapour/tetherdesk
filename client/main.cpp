@@ -138,11 +138,6 @@ int main(int argc, char **argv) {
         }
     }
     if (!opts.password.empty()) opts.autoconnect = true;
-    // A copy named "...QuickSupport..." opens straight into sharing: the
-    // person being helped just runs it and reads out the ID and password.
-    std::string exe = td::executable_path();
-    for (auto &ch : exe) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-    if (exe.find("quicksupport") != std::string::npos) opts.quick_support = true;
     if (opts.quick_support) opts.start_sharing = true;
 #endif
     if (opts.port <= 0) opts.port = RD_DEFAULT_PORT;

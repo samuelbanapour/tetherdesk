@@ -122,12 +122,22 @@ Server::~Server() {
 
 int Server::run() {
     char err[256];
-    listener_ = rd_net_listen(cfg_.bind.c_str(), cfg_.port, err, sizeof err);
-    if (listener_ == RD_INVALID_SOCKET && cfg_.bind == "::")  // no IPv6 on this machine
-        listener_ = rd_net_listen("0.0.0.0", cfg_.port, err, sizeof err);
+    // Local-network listener. If the port is taken (e.g. TetherDesk is already
+    // sharing, or QuickSupport runs alongside the app), try the next few; if
+    // all are busy, carry on through the internet relay alone.
+    for (int p = cfg_.port; p < cfg_.port + 10 && listener_ == RD_INVALID_SOCKET; p++) {
+        listener_ = rd_net_listen(cfg_.bind.c_str(), p, err, sizeof err);
+        if (listener_ == RD_INVALID_SOCKET && cfg_.bind == "::")  // no IPv6 on this machine
+            listener_ = rd_net_listen("0.0.0.0", p, err, sizeof err);
+        if (listener_ != RD_INVALID_SOCKET && p != cfg_.port)
+            log("port %d is busy - local network connections use port %d", cfg_.port, p);
+    }
     if (listener_ == RD_INVALID_SOCKET) {
-        std::fprintf(stderr, "error: %s\n", err);
-        return 1;
+        if (cfg_.relay_host.empty()) {
+            std::fprintf(stderr, "error: %s\n", err);
+            return 1;
+        }
+        log("no local port available - reachable through the relay only");
     }
     std::string cerr;
     if (!plat_.capturer->start(cfg_.display, cfg_.max_fps, cerr)) {
@@ -214,7 +224,7 @@ int Server::run() {
             if (re & (POLLIN | POLLHUP | POLLERR)) read_conn(c);
             if ((re & POLLOUT) && !c.dead) flush(c);
         }
-        if (fds[0].revents & POLLIN) accept_new();
+        if (listener_ != RD_INVALID_SOCKET && (fds[0].revents & POLLIN)) accept_new();
 
         const uint64_t now = rd_now_us();
         for (auto &c : conns_) {
